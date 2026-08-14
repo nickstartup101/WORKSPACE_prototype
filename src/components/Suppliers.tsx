@@ -9,11 +9,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
 import { 
-  Plus, Trash2, Edit3, Save, X, Search, Download, 
-  BarChart3, List, Check, Receipt, ShoppingBag, 
-  Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
+  Plus, Trash2, Edit3, Save, X, Search, Clock, Download, 
+  BarChart3, List, Check, Receipt, ShoppingBag, Layers, 
+  Image as ImageIcon, Upload, Eye, FileText, Wallet, CreditCard,
   Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
-  Percent, ArrowUpRight, ArrowDownRight
+  Percent, ArrowUpRight, ArrowDownRight, Tag
 } from 'lucide-react';
 import { format, isSameMonth, parseISO } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
@@ -59,11 +59,11 @@ export default function Suppliers() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   
-  // Timeframe View State: 'month' (Current Month) vs 'all' (All-Time)
+  // View Timeframe Switcher: 'month' (Current Month) vs 'all' (All-Time)
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
-  // Form Entry Mode: 'batch' (Multi-items in 1 Bill) vs 'single' (Single Item Fast Entry)
-  const [formEntryMode, setFormEntryMode] = useState<'batch' | 'single'>('batch');
+  // Entry Mode Switcher: 'batch' (Multi-Item in 1 Bill) vs 'single' (Single Item Fast Entry)
+  const [entryMode, setEntryMode] = useState<'batch' | 'single'>('batch');
 
   // Product Manager Modal States
   const [showProductManager, setShowProductManager] = useState(false);
@@ -92,7 +92,7 @@ export default function Suppliers() {
   const [billRemark, setBillRemark] = useState<string>('');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // Items list in active bill (for Multi-Item batch or Single item)
+  // Items list in current active bill
   const [billItems, setBillItems] = useState<FormItemRow[]>([
     {
       id: 'item-1',
@@ -114,7 +114,7 @@ export default function Suppliers() {
   const [approvalType, setApprovalType] = useState<'create' | 'delete' | null>(null);
   const [pendingAction, setPendingAction] = useState<any>(null);
 
-  // Merge Products States
+  // Merge Duplicates Modal States
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [mergeSourceId, setMergeSourceId] = useState('');
   const [mergeTargetId, setMergeTargetId] = useState('');
@@ -136,7 +136,7 @@ export default function Suppliers() {
     return `#${format(new Date(), 'ddMMyyyy')}${SUPPLIER_CODES[supplier] || 'OT'}`;
   }, [billDate, supplier]);
 
-  // Subscribe to Firestore Collections
+  // Subscribe to Firestore
   useEffect(() => {
     const qP = query(collection(db, 'products'), orderBy('name'));
     const unsubscribeP = onSnapshot(qP, (snap) => {
@@ -153,13 +153,10 @@ export default function Suppliers() {
       handleFirestoreError(error, OperationType.LIST, 'supplierPrices');
     });
 
-    // Also listen to general finance transactions to integrate full revenue/salary/rental
     const qF = query(collection(db, 'transactions'));
     const unsubscribeF = onSnapshot(qF, (snap) => {
       setFinanceTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, () => {
-      // Non-blocking fallback if collection differs
-    });
+    }, () => {});
 
     return () => {
       unsubscribeP();
@@ -187,7 +184,6 @@ export default function Suppliers() {
   const financialSummary = useMemo(() => {
     const now = new Date();
 
-    // Filter helper based on timeframeMode
     const filterByTimeframe = (recordDateStr?: string) => {
       if (timeframeMode === 'all') return true;
       if (!recordDateStr) return true;
@@ -199,24 +195,21 @@ export default function Suppliers() {
       }
     };
 
-    // Filtered data sets
     const activePrices = supplierPrices.filter(p => filterByTimeframe(p.date));
     const activeFinance = financeTransactions.filter(f => filterByTimeframe(f.date));
 
-    // 1. Payment Channel Balances (Cash, OnePay, LDB)
     let totalCashSpent = 0;
     let totalOnepaySpent = 0;
     let totalLdbSpent = 0;
 
-    let totalRevenue = 0; // Sales / Inflow
-    let totalPurchasing = 0; // COGS (Raw materials)
+    let totalRevenue = 0;
+    let totalPurchasing = 0;
     let totalSalary = 0;
     let totalRental = 0;
     let totalOperation = 0;
     let totalAdmin = 0;
     let totalOtherExpense = 0;
 
-    // Process Supplier Purchases
     activePrices.forEach(p => {
       const isNew = p.totalPriceLAK !== undefined;
       const amount = isNew
@@ -238,7 +231,6 @@ export default function Suppliers() {
       else totalOtherExpense += amount;
     });
 
-    // Process Extra Finance Transactions if present
     activeFinance.forEach(f => {
       const amt = Number(f.amount || 0);
       if (f.type === 'income' || f.category === 'sales') {
@@ -259,21 +251,13 @@ export default function Suppliers() {
       }
     });
 
-    // Total Expenses
     const totalOPEX = totalSalary + totalRental + totalOperation + totalAdmin + totalOtherExpense;
     const totalAllExpenses = totalPurchasing + totalOPEX;
-    
-    // Total Outflow sum across payment channels
     const grandTotalSpent = totalCashSpent + totalOnepaySpent + totalLdbSpent;
 
-    // Gross Profit = Revenue - Purchasing (COGS)
     const grossProfit = totalRevenue - totalPurchasing;
     const grossMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
-
-    // Net Profit = Revenue - Total Expenses
     const netProfit = totalRevenue - totalAllExpenses;
-
-    // Estimated ROI % = (Net Profit / Total Expenses) * 100
     const estimatedROI = totalAllExpenses > 0 ? (netProfit / totalAllExpenses) * 100 : 0;
 
     return {
@@ -292,7 +276,7 @@ export default function Suppliers() {
     };
   }, [supplierPrices, financeTransactions, timeframeMode]);
 
-  // Last 10 records for bar chart
+  // Latest 10 records for chart
   const lastTenPrices = useMemo(() => {
     return [...supplierPrices].slice(0, 10).reverse().map(p => {
       const isNew = p.totalPriceLAK !== undefined;
@@ -336,7 +320,7 @@ export default function Suppliers() {
     reader.readAsDataURL(file);
   };
 
-  // Form Row Helpers
+  // Item Rows Management
   const addNewItemRow = () => {
     setBillItems(prev => [
       ...prev,
@@ -358,7 +342,7 @@ export default function Suppliers() {
 
   const removeItemRow = (index: number) => {
     if (billItems.length <= 1) {
-      alert(i18n.language === 'la' ? 'ຕ້ອງມີຢ່າງໜ້ອຍ 1 ລາຍການ' : 'At least 1 item is required.');
+      alert(i18n.language === 'la' ? 'ຕ້ອງມີຢ່າງໜ້ອຍ 1 ລາຍການໃນໃບບິນ' : 'At least 1 item is required.');
       return;
     }
     setBillItems(prev => prev.filter((_, i) => i !== index));
@@ -389,7 +373,7 @@ export default function Suppliers() {
     }
   };
 
-  // Grand Total of current active bill
+  // Grand Total of current bill
   const grandTotalLAK = useMemo(() => {
     const rate = currency === 'LAK' ? 1 : (Number(exchangeRate) || 1);
     return billItems.reduce((acc, item) => {
@@ -400,7 +384,7 @@ export default function Suppliers() {
     }, 0);
   }, [billItems, currency, exchangeRate]);
 
-  // Submit Bill (Single or Multi-item Batch)
+  // Submit the Bill (Single or Batch)
   const handleSaveBillBatch = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -413,8 +397,8 @@ export default function Suppliers() {
       const item = billItems[i];
       if (!item.productId) {
         alert(i18n.language === 'la' 
-          ? `ລາຍການທີ ${i + 1} ຍັງບໍ່ໄດ້ເລືອກສິນຄ້າ` 
-          : `Item #${i + 1} has no product selected.`);
+          ? `ລາຍການທີ ${i + 1} ຍັງບໍ່ໄດ້ເລືອກສິນຄ້າ. ກະລຸນາເລືອກ ຫຼື ເພີ່ມສິນຄ້າໃໝ່` 
+          : `Item #${i + 1} does not have a selected product.`);
         return;
       }
     }
@@ -466,8 +450,8 @@ export default function Suppliers() {
       }
 
       alert(i18n.language === 'la' 
-        ? `ບັນທຶກ ${billItems.length} ລາຍການ (${generatedBillNo}) ສຳເລັດແລ້ວ!` 
-        : `Successfully saved ${billItems.length} items (${generatedBillNo})!`);
+        ? `ບັນທຶກເລກບິນ ${generatedBillNo} ຈຳນວນ ${billItems.length} ລາຍການສຳເລັດແລ້ວ!` 
+        : `Successfully saved Bill ${generatedBillNo} with ${billItems.length} items!`);
 
       // Reset form
       setBillImageBase64('');
@@ -519,7 +503,7 @@ export default function Suppliers() {
     }
   };
 
-  // Product Master Update / Delete
+  // Product Master Update / Delete Handlers
   const handleUpdateProductName = async (id: string) => {
     if (!editProductName.trim()) return;
     try {
@@ -578,7 +562,7 @@ export default function Suppliers() {
     }
   };
 
-  // Update Single Price Record
+  // Update single price entry
   const handleUpdatePrice = async () => {
     if (!editingPriceId || !editPriceData) return;
     try {
@@ -647,7 +631,7 @@ export default function Suppliers() {
   return (
     <div className="space-y-6">
       
-      {/* ================= 1. TIMEFRAME SELECTOR & TOP HEADER ================= */}
+      {/* ================= 1. TIMEFRAME SELECTOR & HEADER ================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-2xl">
@@ -655,7 +639,7 @@ export default function Suppliers() {
           </div>
           <div>
             <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
-              {i18n.language === 'la' ? 'ພາບລວມການເງິນ & ຜູ້ສະໜອງ' : 'Finance & Supplier Procurement Hub'}
+              {i18n.language === 'la' ? 'ລະບົບລາຍຈ່າຍ & ຜູ້ສະໜອງ (Finance & Suppliers)' : 'Finance & Supplier Procurement Hub'}
             </h2>
             <p className="text-[10px] text-slate-400 dark:text-slate-300 font-bold uppercase mt-0.5">
               {timeframeMode === 'month' 
@@ -897,15 +881,15 @@ export default function Suppliers() {
       {/* ================= 4. MAIN ENTRY FORM (LEFT) & ACTIVE FEED (RIGHT) ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* LEFT: FLEXIBLE ENTRY FORM (Supports Single Item OR Multi-Item Batch) */}
+        {/* LEFT: FLEXIBLE ENTRY FORM (Single Item OR Multi-Item Batch) */}
         <div className="xl:col-span-5 space-y-6">
           <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
             
-            {/* Header + Mode Switch (Single vs Batch) */}
+            {/* Header + Mode Toggle Switch */}
             <div className="flex justify-between items-start border-b border-slate-100 dark:border-white/10 pb-4">
               <div>
                 <span className="px-2.5 py-1 bg-primary/10 dark:bg-blue-400/20 text-primary dark:text-blue-300 rounded-full text-[9px] font-black uppercase tracking-wider">
-                  {formEntryMode === 'batch' ? 'MULTI-ITEM BILL' : 'SINGLE ENTRY'}
+                  {entryMode === 'batch' ? 'MULTI-ITEM BILL' : 'SINGLE ENTRY'}
                 </span>
                 <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2 mt-1">
                   <Receipt className="w-4 h-4 text-emerald-500" />
@@ -913,32 +897,34 @@ export default function Suppliers() {
                 </h3>
               </div>
 
-              {/* Single vs Multi-Item Toggle */}
-              <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
+              {/* 🟢 SWITCH ENTRY MODE: Single vs Multi-Item */}
+              <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
                 <button
                   type="button"
-                  onClick={() => {
-                    setFormEntryMode('batch');
-                  }}
-                  className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg transition-all ${
-                    formEntryMode === 'batch' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'
+                  onClick={() => setEntryMode('batch')}
+                  className={`px-3 py-1 text-[10px] font-black uppercase rounded-xl transition-all cursor-pointer ${
+                    entryMode === 'batch' 
+                      ? 'bg-[#052659] text-white shadow-xs' 
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
                   }`}
                 >
-                  {i18n.language === 'la' ? 'ຫຼາຍລາຍການ' : 'Multi-Item'}
+                  {i18n.language === 'la' ? 'ຫຼາຍລາຍການ (Batch)' : 'Multi-Item'}
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    setFormEntryMode('single');
+                    setEntryMode('single');
                     if (billItems.length > 1) {
                       setBillItems([billItems[0]]);
                     }
                   }}
-                  className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg transition-all ${
-                    formEntryMode === 'single' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'
+                  className={`px-3 py-1 text-[10px] font-black uppercase rounded-xl transition-all cursor-pointer ${
+                    entryMode === 'single' 
+                      ? 'bg-[#052659] text-white shadow-xs' 
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
                   }`}
                 >
-                  {i18n.language === 'la' ? 'ລາຍການດ່ຽວ' : 'Single Item'}
+                  {i18n.language === 'la' ? 'ລາຍການດ່ຽວ (Single)' : 'Single'}
                 </button>
               </div>
             </div>
@@ -973,7 +959,7 @@ export default function Suppliers() {
                 </div>
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
-                    Bill No.
+                    Bill No. (Auto)
                   </label>
                   <div className="w-full h-10 px-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[11px] font-mono font-black flex items-center justify-center">
                     {generatedBillNo}
@@ -984,13 +970,13 @@ export default function Suppliers() {
               {/* Row: Supplier, Category & Payment Method */}
               <div className="grid grid-cols-3 gap-2">
                 
-                {/* Supplier */}
+                {/* 1. Supplier */}
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
                     {i18n.language === 'la' ? 'ຜູ້ສະໜອງ' : 'Supplier'}
                   </label>
                   <select 
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
                     value={supplier}
                     onChange={e => setSupplier(e.target.value)}
                     required
@@ -1004,13 +990,14 @@ export default function Suppliers() {
                   </select>
                 </div>
 
-                {/* Category (Purchasing, Rental, Salary, Operation, Admin, Sales, Other) */}
+                {/* 2. Category: purchasing, rental, salary, operation, admin, sales, other */}
                 <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
-                    {i18n.language === 'la' ? 'ປະເພດລາຍການ' : 'Category'}
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                    <Tag className="w-3 h-3 text-emerald-500" />
+                    <span>{i18n.language === 'la' ? 'ປະເພດລາຍການ' : 'Category'}</span>
                   </label>
                   <select 
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
                     value={category}
                     onChange={e => setCategory(e.target.value as ExpenseCategory)}
                     required
@@ -1025,13 +1012,14 @@ export default function Suppliers() {
                   </select>
                 </div>
 
-                {/* Payment Method (Cash, Onepay, LDB) */}
+                {/* 3. Payment Method: Cash, Onepay, LDB */}
                 <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
-                    {i18n.language === 'la' ? 'ຊ່ອງທາງການເງິນ' : 'Paid Via'}
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                    <Wallet className="w-3 h-3 text-blue-500" />
+                    <span>{i18n.language === 'la' ? 'ຊ່ອງທາງຈ່າຍ' : 'Paid Via'}</span>
                   </label>
                   <select 
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
                     value={paymentMethod}
                     onChange={e => setPaymentMethod(e.target.value as PaymentMethod)}
                     required
@@ -1131,19 +1119,19 @@ export default function Suppliers() {
                 )}
               </div>
 
-              {/* Items List */}
+              {/* Items List (Single or Multi-item) */}
               <div className="space-y-3 pt-2">
                 <div className="flex justify-between items-center">
                   <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-1.5">
                     <ShoppingBag className="w-3.5 h-3.5 text-primary" />
-                    <span>{formEntryMode === 'batch' ? `ລາຍການສິນຄ້າ (${billItems.length})` : 'ລາຍການສິນຄ້າ'}</span>
+                    <span>{entryMode === 'batch' ? `ລາຍການສິນຄ້າ (${billItems.length})` : 'ລາຍການສິນຄ້າ (Single Item)'}</span>
                   </span>
                   
-                  {formEntryMode === 'batch' && (
+                  {entryMode === 'batch' && (
                     <button
                       type="button"
                       onClick={addNewItemRow}
-                      className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[9.5px] font-black uppercase transition-all"
+                      className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[9.5px] font-black uppercase transition-all cursor-pointer"
                     >
                       <Plus className="w-3 h-3" />
                       <span>{i18n.language === 'la' ? 'ເພີ່ມລາຍການ' : 'Add Item'}</span>
