@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Products and raw materials used in the coffee shop.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "unit": { "type": "string" },
+        "isApproved": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "unit", "isApproved"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Suppliers providing products and raw materials.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "contactInfo": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "SupplierPrice": {
+      "title": "Supplier Price",
+      "description": "Tracking prices from different suppliers.",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "currency": { "type": "string", "enum": ["LAK", "THB", "USD"] },
+        "exchangeRate": { "type": "number" },
+        "priceOriginal": { "type": "number" },
+        "priceLAK": { "type": "number" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "supplierId", "priceLAK", "userId"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Income or Expense record.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["income", "expense"] },
+        "source": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "receiptUrl": { "type": "string" },
+        "description": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "amount", "userId", "date"]
+    },
+    "DailySummary": {
+      "title": "Daily Summary",
+      "description": "Summary of daily financial activity and balance tracking.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "previousBalance": { "type": "number" },
+        "income": { "type": "number" },
+        "expenses": { "type": "number" },
+        "finalBalance": { "type": "number" },
+        "userId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "previousBalance", "income", "expenses", "finalBalance"]
+    },
+    "Recipe": {
+      "title": "Recipe",
+      "description": "Recipe for drinks and items sold.",
+      "type": "object",
+      "properties": {
+        "menuName": { "type": "string" },
+        "ingredients": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "productId": { "type": "string" },
+              "quantity": { "type": "number" }
+            }
+          }
+        }
+      },
+      "required": ["menuName", "ingredients"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "Log of all security and data modifications.",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string" },
+        "details": { "type": "object" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "AppConfig": {
+      "title": "App Config",
+      "description": "Global application configuration settings.",
+      "type": "object",
+      "properties": {
+        "logoUrl": { "type": "string" },
+        "shopName": { "type": "string" },
+        "shopSlogan": { "type": "string" },
+        "masterApprovalPin": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string" }
+      }
+    },
+    "UserSettings": {
+      "title": "User Settings",
+      "description": "Personalized settings for specific users, including security and integrations.",
+      "type": "object",
+      "properties": {
+        "financialPin": { "type": "string" },
+        "googleSheetsId": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator role definitions.",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["admin", "super_admin"] },
+        "email": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["role", "email"]
+    }
+  },
+  "firestore": {
+    "/products": { "schema": "Product", "description": "Global list of products." },
+    "/suppliers": { "schema": "Supplier", "description": "List of suppliers." },
+    "/supplierPrices": { "schema": "SupplierPrice", "description": "Historical price tracking." },
+    "/transactions": { "schema": "Transaction", "description": "Financial income and expenses." },
+    "/dailySummaries": { "schema": "DailySummary", "description": "Daily balance reports." },
+    "/recipes": { "schema": "Recipe", "description": "Drink recipes for stock calculation." },
+    "/auditLogs": { "schema": "AuditLog", "description": "Security and modification logs." },
+    "/settings/appConfig": { "schema": "AppConfig", "description": "Global site settings." },
+    "/admins/{adminId}": { "schema": "Admin", "description": "Role-based access control for administrators." },
+    "/users/{userId}/settings": { "schema": "UserSettings", "description": "Individual user preferences and security PIN." }
+  }
+}

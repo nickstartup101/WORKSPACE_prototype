@@ -1,0 +1,6 @@
+{
+  "name": "La Dolce workspace estd 2026",
+  "description": "Professional workspace for managing coffee shop operations, including Loyverse integration, supplier price tracking, income/expense management, and sales analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
