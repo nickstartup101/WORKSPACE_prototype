@@ -9,11 +9,13 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
 import { 
-  Plus, Trash2, Edit3, Save, X, Search, Clock, Download, 
-  BarChart3, List, Check, Receipt, ShoppingBag, Layers, 
-  Image as ImageIcon, Upload, Eye, FileText
+  Plus, Trash2, Edit3, Save, X, Search, Download, 
+  BarChart3, List, Check, Receipt, ShoppingBag, 
+  Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
+  Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
+  Percent, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { format, isSameMonth, parseISO } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { useTranslation } from 'react-i18next';
 import { COMMON_RESOURCES } from '../constants';
@@ -28,6 +30,9 @@ const SUPPLIER_CODES: Record<string, string> = {
   'MARRY ANN': 'MA',
   'OTHER': 'OT'
 };
+
+export type PaymentMethod = 'Cash' | 'Onepay' | 'LDB';
+export type ExpenseCategory = 'purchasing' | 'rental' | 'salary' | 'operation' | 'admin' | 'sales' | 'other';
 
 interface FormItemRow {
   id: string;
@@ -49,10 +54,17 @@ export default function Suppliers() {
 
   const [products, setProducts] = useState<any[]>([]);
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
+  const [financeTransactions, setFinanceTransactions] = useState<any[]>([]);
   const [selectedFilterDate, setSelectedFilterDate] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   
+  // Timeframe View State: 'month' (Current Month) vs 'all' (All-Time)
+  const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
+
+  // Form Entry Mode: 'batch' (Multi-items in 1 Bill) vs 'single' (Single Item Fast Entry)
+  const [formEntryMode, setFormEntryMode] = useState<'batch' | 'single'>('batch');
+
   // Product Manager Modal States
   const [showProductManager, setShowProductManager] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
@@ -68,17 +80,19 @@ export default function Suppliers() {
   // Receipt Viewer Modal
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
-  // --- Bill Entry Form States (Multi-item entry) ---
+  // --- Bill Entry Form States ---
   const [billDate, setBillDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
   const [billTime, setBillTime] = useState<string>(format(new Date(), 'HH:mm'));
   const [supplier, setSupplier] = useState<string>('CHANHOM');
+  const [category, setCategory] = useState<ExpenseCategory>('purchasing');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
   const [currency, setCurrency] = useState<string>('LAK');
   const [exchangeRate, setExchangeRate] = useState<number>(1);
   const [billImageBase64, setBillImageBase64] = useState<string>('');
   const [billRemark, setBillRemark] = useState<string>('');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // Items list in current active bill
+  // Items list in active bill (for Multi-Item batch or Single item)
   const [billItems, setBillItems] = useState<FormItemRow[]>([
     {
       id: 'item-1',
@@ -100,7 +114,7 @@ export default function Suppliers() {
   const [approvalType, setApprovalType] = useState<'create' | 'delete' | null>(null);
   const [pendingAction, setPendingAction] = useState<any>(null);
 
-  // Merge Products / Duplicates States
+  // Merge Products States
   const [showMergeModal, setShowMergeModal] = useState(false);
   const [mergeSourceId, setMergeSourceId] = useState('');
   const [mergeTargetId, setMergeTargetId] = useState('');
@@ -110,7 +124,7 @@ export default function Suppliers() {
   // Auto Bill No Generation: # + DDMMYYYY + SupplierCode (e.g. #14082026CH)
   const generatedBillNo = useMemo(() => {
     try {
-      const parts = billDate.split('-'); // [yyyy, mm, dd]
+      const parts = billDate.split('-');
       if (parts.length === 3) {
         const ddmmyyyy = `${parts[2]}${parts[1]}${parts[0]}`;
         const code = SUPPLIER_CODES[supplier] || (supplier ? supplier.slice(0, 2).toUpperCase() : 'OT');
@@ -122,7 +136,7 @@ export default function Suppliers() {
     return `#${format(new Date(), 'ddMMyyyy')}${SUPPLIER_CODES[supplier] || 'OT'}`;
   }, [billDate, supplier]);
 
-  // Subscribe to Firestore
+  // Subscribe to Firestore Collections
   useEffect(() => {
     const qP = query(collection(db, 'products'), orderBy('name'));
     const unsubscribeP = onSnapshot(qP, (snap) => {
@@ -139,9 +153,18 @@ export default function Suppliers() {
       handleFirestoreError(error, OperationType.LIST, 'supplierPrices');
     });
 
+    // Also listen to general finance transactions to integrate full revenue/salary/rental
+    const qF = query(collection(db, 'transactions'));
+    const unsubscribeF = onSnapshot(qF, (snap) => {
+      setFinanceTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, () => {
+      // Non-blocking fallback if collection differs
+    });
+
     return () => {
       unsubscribeP();
       unsubscribeS();
+      unsubscribeF();
     };
   }, []);
 
@@ -160,7 +183,116 @@ export default function Suppliers() {
     });
   }, [supplierPrices]);
 
-  // Latest 10 records for bar chart
+  // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
+  const financialSummary = useMemo(() => {
+    const now = new Date();
+
+    // Filter helper based on timeframeMode
+    const filterByTimeframe = (recordDateStr?: string) => {
+      if (timeframeMode === 'all') return true;
+      if (!recordDateStr) return true;
+      try {
+        const d = parseISO(recordDateStr);
+        return isSameMonth(d, now);
+      } catch {
+        return true;
+      }
+    };
+
+    // Filtered data sets
+    const activePrices = supplierPrices.filter(p => filterByTimeframe(p.date));
+    const activeFinance = financeTransactions.filter(f => filterByTimeframe(f.date));
+
+    // 1. Payment Channel Balances (Cash, OnePay, LDB)
+    let totalCashSpent = 0;
+    let totalOnepaySpent = 0;
+    let totalLdbSpent = 0;
+
+    let totalRevenue = 0; // Sales / Inflow
+    let totalPurchasing = 0; // COGS (Raw materials)
+    let totalSalary = 0;
+    let totalRental = 0;
+    let totalOperation = 0;
+    let totalAdmin = 0;
+    let totalOtherExpense = 0;
+
+    // Process Supplier Purchases
+    activePrices.forEach(p => {
+      const isNew = p.totalPriceLAK !== undefined;
+      const amount = isNew
+        ? Number(p.totalPriceLAK || 0)
+        : (p.currency === 'LAK' ? Number(p.priceOriginal || 0) : Number(p.priceOriginal || 0) * Number(p.exchangeRate || 1)) * (Number(p.quantity) || 1);
+
+      const payMethod: PaymentMethod = p.paymentMethod || 'Cash';
+      if (payMethod === 'Cash') totalCashSpent += amount;
+      else if (payMethod === 'Onepay') totalOnepaySpent += amount;
+      else if (payMethod === 'LDB') totalLdbSpent += amount;
+
+      const cat: ExpenseCategory = p.category || 'purchasing';
+      if (cat === 'purchasing') totalPurchasing += amount;
+      else if (cat === 'salary') totalSalary += amount;
+      else if (cat === 'rental') totalRental += amount;
+      else if (cat === 'operation') totalOperation += amount;
+      else if (cat === 'admin') totalAdmin += amount;
+      else if (cat === 'sales') totalRevenue += amount;
+      else totalOtherExpense += amount;
+    });
+
+    // Process Extra Finance Transactions if present
+    activeFinance.forEach(f => {
+      const amt = Number(f.amount || 0);
+      if (f.type === 'income' || f.category === 'sales') {
+        totalRevenue += amt;
+      } else {
+        const cat = (f.category || 'other').toLowerCase();
+        if (cat === 'purchasing') totalPurchasing += amt;
+        else if (cat === 'salary') totalSalary += amt;
+        else if (cat === 'rental') totalRental += amt;
+        else if (cat === 'operation') totalOperation += amt;
+        else if (cat === 'admin') totalAdmin += amt;
+        else totalOtherExpense += amt;
+
+        const pay = f.paymentMethod || 'Cash';
+        if (pay === 'Cash') totalCashSpent += amt;
+        else if (pay === 'Onepay') totalOnepaySpent += amt;
+        else if (pay === 'LDB') totalLdbSpent += amt;
+      }
+    });
+
+    // Total Expenses
+    const totalOPEX = totalSalary + totalRental + totalOperation + totalAdmin + totalOtherExpense;
+    const totalAllExpenses = totalPurchasing + totalOPEX;
+    
+    // Total Outflow sum across payment channels
+    const grandTotalSpent = totalCashSpent + totalOnepaySpent + totalLdbSpent;
+
+    // Gross Profit = Revenue - Purchasing (COGS)
+    const grossProfit = totalRevenue - totalPurchasing;
+    const grossMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+
+    // Net Profit = Revenue - Total Expenses
+    const netProfit = totalRevenue - totalAllExpenses;
+
+    // Estimated ROI % = (Net Profit / Total Expenses) * 100
+    const estimatedROI = totalAllExpenses > 0 ? (netProfit / totalAllExpenses) * 100 : 0;
+
+    return {
+      totalCashSpent,
+      totalOnepaySpent,
+      totalLdbSpent,
+      grandTotalSpent,
+      totalRevenue,
+      totalPurchasing,
+      totalOPEX,
+      totalAllExpenses,
+      grossProfit,
+      grossMarginPercent,
+      netProfit,
+      estimatedROI
+    };
+  }, [supplierPrices, financeTransactions, timeframeMode]);
+
+  // Last 10 records for bar chart
   const lastTenPrices = useMemo(() => {
     return [...supplierPrices].slice(0, 10).reverse().map(p => {
       const isNew = p.totalPriceLAK !== undefined;
@@ -174,14 +306,13 @@ export default function Suppliers() {
     });
   }, [supplierPrices]);
 
-  // Handle Bill Image Upload & Compression to Base64
+  // Handle Bill Image Upload & Compression
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check size limit (< 5MB before compression)
     if (file.size > 5 * 1024 * 1024) {
-      alert(i18n.language === 'la' ? 'ຮູບພາບມີຂະໜາດໃຫຍ່ເກີນ 5MB, ກະລຸນາເລືອກຮູບໃໝ່' : 'File is larger than 5MB. Please choose a smaller image.');
+      alert(i18n.language === 'la' ? 'ຮູບພາບມີຂະໜາດໃຫຍ່ເກີນ 5MB, ກະລຸນາເລືອກຮູບໃໝ່' : 'File is larger than 5MB.');
       return;
     }
 
@@ -190,7 +321,6 @@ export default function Suppliers() {
       const img = new Image();
       img.src = event.target?.result as string;
       img.onload = () => {
-        // Compress image using canvas
         const canvas = document.createElement('canvas');
         const MAX_WIDTH = 1200;
         const scaleSize = MAX_WIDTH / img.width;
@@ -206,7 +336,7 @@ export default function Suppliers() {
     reader.readAsDataURL(file);
   };
 
-  // Helper functions for Form Item Rows
+  // Form Row Helpers
   const addNewItemRow = () => {
     setBillItems(prev => [
       ...prev,
@@ -228,7 +358,7 @@ export default function Suppliers() {
 
   const removeItemRow = (index: number) => {
     if (billItems.length <= 1) {
-      alert(i18n.language === 'la' ? 'ຕ້ອງມີຢ່າງໜ້ອຍ 1 ລາຍການໃນໃບບິນ' : 'At least 1 item is required.');
+      alert(i18n.language === 'la' ? 'ຕ້ອງມີຢ່າງໜ້ອຍ 1 ລາຍການ' : 'At least 1 item is required.');
       return;
     }
     setBillItems(prev => prev.filter((_, i) => i !== index));
@@ -259,7 +389,7 @@ export default function Suppliers() {
     }
   };
 
-  // Calculate Grand Total of the current Bill
+  // Grand Total of current active bill
   const grandTotalLAK = useMemo(() => {
     const rate = currency === 'LAK' ? 1 : (Number(exchangeRate) || 1);
     return billItems.reduce((acc, item) => {
@@ -270,7 +400,7 @@ export default function Suppliers() {
     }, 0);
   }, [billItems, currency, exchangeRate]);
 
-  // Submit the entire Bill batch
+  // Submit Bill (Single or Multi-item Batch)
   const handleSaveBillBatch = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -279,13 +409,12 @@ export default function Suppliers() {
       return;
     }
 
-    // Validate that all items have a selected productId
     for (let i = 0; i < billItems.length; i++) {
       const item = billItems[i];
       if (!item.productId) {
         alert(i18n.language === 'la' 
-          ? `ລາຍການທີ ${i + 1} ຍັງບໍ່ໄດ້ເລືອກສິນຄ້າ. ກະລຸນາເລືອກ ຫຼື ເພີ່ມສິນຄ້າໃໝ່` 
-          : `Item #${i + 1} does not have a selected product. Please select or create one.`);
+          ? `ລາຍການທີ ${i + 1} ຍັງບໍ່ໄດ້ເລືອກສິນຄ້າ` 
+          : `Item #${i + 1} has no product selected.`);
         return;
       }
     }
@@ -295,7 +424,6 @@ export default function Suppliers() {
       const batchGroupId = `bill_${Date.now()}`;
       const finalRate = currency === 'LAK' ? 1 : (Number(exchangeRate) || 1);
 
-      // Save each item in the batch linked to the same billNo and bill image
       for (const item of billItems) {
         const qty = Number(item.quantity) || 1;
         const qtyPerUnit = Number(item.quantityPerUnit) || 1;
@@ -316,6 +444,8 @@ export default function Suppliers() {
           billRemark: billRemark.trim(),
           productId: item.productId,
           supplier,
+          category,
+          paymentMethod,
           currency,
           exchangeRate: finalRate,
           priceOriginal: singlePriceOriginal,
@@ -336,8 +466,8 @@ export default function Suppliers() {
       }
 
       alert(i18n.language === 'la' 
-        ? `ບັນທຶກໃບບິນເລກທີ ${generatedBillNo} ທັງໝົດ ${billItems.length} ລາຍການສຳເລັດແລ້ວ!` 
-        : `Successfully saved Bill ${generatedBillNo} with ${billItems.length} items!`);
+        ? `ບັນທຶກ ${billItems.length} ລາຍການ (${generatedBillNo}) ສຳເລັດແລ້ວ!` 
+        : `Successfully saved ${billItems.length} items (${generatedBillNo})!`);
 
       // Reset form
       setBillImageBase64('');
@@ -361,11 +491,6 @@ export default function Suppliers() {
 
     } catch (err: any) {
       console.error("Save Error:", err);
-      if (err.message?.includes("permission-denied")) {
-        alert("Permission Denied: You do not have rights to create supplier records.");
-      } else {
-        alert("Error saving data. Please check connection and try again.");
-      }
       handleFirestoreError(err, OperationType.CREATE, 'supplierPrices');
     } finally {
       setSaveLoading(false);
@@ -394,7 +519,7 @@ export default function Suppliers() {
     }
   };
 
-  // Product Master Update / Delete Handlers
+  // Product Master Update / Delete
   const handleUpdateProductName = async (id: string) => {
     if (!editProductName.trim()) return;
     try {
@@ -420,27 +545,14 @@ export default function Suppliers() {
       await deleteDoc(doc(db, 'products', id));
       alert("Product deleted successfully");
     } catch (err: any) {
-      console.error("Delete Error:", err);
       handleFirestoreError(err, OperationType.DELETE, 'products');
     }
   };
 
   // Merge Duplicates
   const handleMergeProducts = async () => {
-    if (!mergeSourceId || !mergeTargetId) {
-      alert("Please select both a source product and a target product.");
-      return;
-    }
-    if (mergeSourceId === mergeTargetId) {
-      alert("Source and Target cannot be the same product!");
-      return;
-    }
-
-    const sourceProd = products.find(p => p.id === mergeSourceId);
-    const targetProd = products.find(p => p.id === mergeTargetId);
-    if (!sourceProd || !targetProd) return;
-
-    if (!confirm(`Merge "${sourceProd.name}" into "${targetProd.name}"?`)) return;
+    if (!mergeSourceId || !mergeTargetId) return;
+    if (mergeSourceId === mergeTargetId) return;
 
     try {
       setIsMerging(true);
@@ -450,7 +562,7 @@ export default function Suppliers() {
         await updateDoc(doc(db, 'supplierPrices', priceDoc.id), {
           productId: mergeTargetId,
           quantityPerUnit: newQtyPerUnit,
-          remark: `${priceDoc.remark || ''} (Merged from ${sourceProd.name})`.trim()
+          remark: `${priceDoc.remark || ''} (Merged)`.trim()
         });
       }
       await deleteDoc(doc(db, 'products', mergeSourceId));
@@ -460,14 +572,13 @@ export default function Suppliers() {
       setMergeTargetId('');
       setMergeMultiplier(1);
     } catch (err: any) {
-      console.error(err);
-      alert("Error while merging: " + err.message);
+      alert("Error: " + err.message);
     } finally {
       setIsMerging(false);
     }
   };
 
-  // Update single price entry
+  // Update Single Price Record
   const handleUpdatePrice = async () => {
     if (!editingPriceId || !editPriceData) return;
     try {
@@ -497,7 +608,6 @@ export default function Suppliers() {
     }
   };
 
-  // Execute approval deletion
   const executeApprovedAction = async () => {
     if (approvalType === 'delete' && pendingAction) {
       try {
@@ -512,10 +622,12 @@ export default function Suppliers() {
 
   // Export to Excel
   const handleExport = () => {
-    const headers = ['Bill No', 'Date', 'Product', 'Supplier', 'Price LAK', 'Total LAK', 'Quantity', 'Unit', 'Remark', 'User'];
+    const headers = ['Bill No', 'Date', 'Category', 'Payment Method', 'Product', 'Supplier', 'Price LAK', 'Total LAK', 'Quantity', 'Unit', 'Remark', 'User'];
     const rows = sortedSupplierPrices.map(p => [
       p.billNo || '-',
       p.date || format(p.createdAt?.toDate() || new Date(), 'yyyy-MM-dd'),
+      p.category || 'purchasing',
+      p.paymentMethod || 'Cash',
       products.find(prod => prod.id === p.productId)?.name || 'Unknown',
       p.supplier,
       p.priceLAK || 0,
@@ -528,40 +640,244 @@ export default function Suppliers() {
 
     const worksheet = utils.aoa_to_sheet([headers, ...rows]);
     const workbook = utils.book_new();
-    utils.book_append_sheet(workbook, worksheet, 'Suppliers Report');
-    writeFile(workbook, `suppliers_bills_report_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+    utils.book_append_sheet(workbook, worksheet, 'Suppliers & Finance Report');
+    writeFile(workbook, `suppliers_finance_report_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
   };
 
   return (
     <div className="space-y-6">
-      {/* Real-time Status Header & Bill Code Info */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-2xl border border-[#052659]/10 dark:border-white/5 shadow-sm">
+      
+      {/* ================= 1. TIMEFRAME SELECTOR & TOP HEADER ================= */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center">
-            <span className="absolute inline-flex h-3.5 w-3.5 rounded-full bg-emerald-400 opacity-75 animate-ping"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+          <div className="p-2.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-2xl">
+            <PieChart className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
-              {i18n.language === 'la' ? 'ລະບົບບັນທຶກໃບບິນ ແລະ ລາຄາຜູ້ສະໜອງ (Multi-Item Bill Registry)' : 'Supplier Multi-Item Bill & Pricing Registry'}
+              {i18n.language === 'la' ? 'ພາບລວມການເງິນ & ຜູ້ສະໜອງ' : 'Finance & Supplier Procurement Hub'}
             </h2>
             <p className="text-[10px] text-slate-400 dark:text-slate-300 font-bold uppercase mt-0.5">
-              {i18n.language === 'la' 
-                ? 'ບັນທຶກຫຼາຍລາຍການໃນບິນດຽວ • ຜູກຮູບໃບບິນອັດຕະໂນມັດ • ສົ່ງຕໍ່ໃຫ້ຝັ່ງ Finance ໄດ້ທັນທີ' 
-                : 'Batch item entry linked with receipt image & auto Bill No for Finance sync'}
+              {timeframeMode === 'month' 
+                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${format(new Date(), 'MMMM yyyy')})`)
+                : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time Data)' : 'Viewing: All-Time Overall Balance')}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Timeframe Toggle Switch: This Month vs All-Time */}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
+            <button
+              type="button"
+              onClick={() => setTimeframeMode('month')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                timeframeMode === 'month'
+                  ? 'bg-[#052659] text-white shadow-md'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+              }`}
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>{i18n.language === 'la' ? 'ພາຍໃນເດືອນນີ້' : 'This Month'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTimeframeMode('all')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                timeframeMode === 'all'
+                  ? 'bg-[#052659] text-white shadow-md'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+              }`}
+            >
+              <Filter className="w-3.5 h-3.5" />
+              <span>{i18n.language === 'la' ? 'ຍອດລວມທັງໝົດ' : 'All-Time'}</span>
+            </button>
+          </div>
+
           <button 
             type="button" 
             onClick={() => setShowProductManager(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-700 dark:text-white font-black text-[10px] uppercase rounded-xl transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-white font-black text-xs uppercase rounded-2xl transition-all"
           >
-            <List className="w-3.5 h-3.5 text-primary dark:text-blue-400" />
-            <span>{i18n.language === 'la' ? 'ຈັດການສິນຄ້າ / Items' : 'Manage Items'}</span>
+            <List className="w-3.5 h-3.5 text-primary" />
+            <span>{i18n.language === 'la' ? 'ສິນຄ້າ' : 'Items'}</span>
           </button>
+        </div>
+      </div>
+
+      {/* ================= 2. PAYMENT CHANNELS CARDS (Cash, Onepay, LDB) ================= */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        
+        {/* Total Liquidity Spent */}
+        <div className="bg-gradient-to-br from-[#052659] to-[#073069] text-white p-5 rounded-3xl shadow-xl space-y-2 relative overflow-hidden">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#5483B3]">
+              {i18n.language === 'la' ? 'ຍອດລາຍຈ່າຍລວມທັງໝົດ' : 'Total Outflow Sum'}
+            </span>
+            <div className="p-2 bg-white/10 rounded-xl">
+              <DollarSign className="w-4 h-4 text-emerald-400" />
+            </div>
+          </div>
+          <p className="text-xl font-black font-mono tracking-tight">
+            {Math.round(financialSummary.grandTotalSpent).toLocaleString()} ₭
+          </p>
+          <p className="text-[9.5px] text-blue-200/60 font-bold uppercase">
+            {timeframeMode === 'month' ? 'Current Month Total' : 'All Recorded Transactions'}
+          </p>
+        </div>
+
+        {/* Cash In-Hand (ເງິນສົດໃນມື) */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
+              💵 {i18n.language === 'la' ? 'ເງິນສົດ (Cash)' : 'Cash Outflow'}
+            </span>
+            <div className="p-2 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl">
+              <Wallet className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+            {Math.round(financialSummary.totalCashSpent).toLocaleString()} ₭
+          </p>
+          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
+            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານເງິນສົດ' : 'Physical Cash'}</span>
+            <span className="text-emerald-500 font-mono">
+              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalCashSpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
+            </span>
+          </div>
+        </div>
+
+        {/* BCEL OnePay (ເງິນໂອນ OnePay) */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400">
+              📱 {i18n.language === 'la' ? 'ໂອນ BCEL OnePay' : 'OnePay Outflow'}
+            </span>
+            <div className="p-2 bg-red-500/10 text-red-500 dark:text-red-400 rounded-xl">
+              <CreditCard className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+            {Math.round(financialSummary.totalOnepaySpent).toLocaleString()} ₭
+          </p>
+          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
+            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານ OnePay QR' : 'BCEL QR Transfer'}</span>
+            <span className="text-red-500 font-mono">
+              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalOnepaySpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
+            </span>
+          </div>
+        </div>
+
+        {/* LDB Bank (ທະນາຄານພັດທະນາລາວ) */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400">
+              🏦 {i18n.language === 'la' ? 'ໂອນ ທະນາຄານ LDB' : 'LDB Bank Outflow'}
+            </span>
+            <div className="p-2 bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-xl">
+              <Building2 className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+            {Math.round(financialSummary.totalLdbSpent).toLocaleString()} ₭
+          </p>
+          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
+            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານ LDB Trust' : 'LDB Bank Transfer'}</span>
+            <span className="text-blue-500 font-mono">
+              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalLdbSpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
+            </span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ================= 3. EXECUTIVE FINANCIAL REPORT (ROI, Margin, Revenue, Net Profit) ================= */}
+      <div className="bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-4">
+          <div>
+            <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-emerald-500" />
+              <span>{i18n.language === 'la' ? 'ບົດລາຍງານປະສິດທິພາບການເງິນ (Financial Performance Report)' : 'Financial KPIs & Performance'}</span>
+            </h3>
+            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+              {i18n.language === 'la' 
+                ? 'ຄິດໄລ່ຍອດຂາຍ, ຕົ້ນທຶນວັດຖຸດິບ (Purchasing), ຄ່າໃຊ້ຈ່າຍບໍລິຫານ ແລະ ກຳໄລສຸດທິ' 
+                : 'Live Profitability, Gross Margin, and Estimated ROI Analytics'}
+            </p>
+          </div>
+
+          <span className="px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-mono font-black w-fit">
+            {timeframeMode === 'month' ? '📅 Monthly KPI' : '🌐 All-Time KPI'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          
+          {/* Total Revenue */}
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+              <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
+              {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Total Revenue'}
+            </span>
+            <p className="text-lg font-black font-mono text-emerald-600 dark:text-emerald-400">
+              {Math.round(financialSummary.totalRevenue).toLocaleString()} ₭
+            </p>
+            <p className="text-[9px] text-slate-400 font-medium">Recorded from Sales</p>
+          </div>
+
+          {/* Purchasing (COGS) */}
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+              <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
+              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
+            </span>
+            <p className="text-lg font-black font-mono text-red-500 dark:text-red-400">
+              {Math.round(financialSummary.totalPurchasing).toLocaleString()} ₭
+            </p>
+            <p className="text-[9px] text-slate-400 font-medium">Raw Material Purchases</p>
+          </div>
+
+          {/* Gross Margin % */}
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+              <Percent className="w-3.5 h-3.5 text-blue-500" />
+              {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ (Gross Margin)' : 'Gross Margin'}
+            </span>
+            <p className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
+              {financialSummary.grossMarginPercent.toFixed(1)}%
+            </p>
+            <p className="text-[9px] text-slate-400 font-medium">
+              GP: {Math.round(financialSummary.grossProfit).toLocaleString()} ₭
+            </p>
+          </div>
+
+          {/* Net Profit */}
+          <div className={`p-4 rounded-2xl border space-y-1 ${
+            financialSummary.netProfit >= 0 
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+              : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
+          }`}>
+            <span className="text-[9.5px] font-black uppercase tracking-wider block">
+              {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
+            </span>
+            <p className="text-lg font-black font-mono">
+              {Math.round(financialSummary.netProfit).toLocaleString()} ₭
+            </p>
+            <p className="text-[9px] opacity-80 font-medium">After all OPEX & Purchasing</p>
+          </div>
+
+          {/* Estimated ROI */}
+          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 space-y-1">
+            <span className="text-[9.5px] font-black uppercase tracking-wider block">
+              {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI (Est. ROI)' : 'Estimated ROI'}
+            </span>
+            <p className="text-lg font-black font-mono">
+              {financialSummary.estimatedROI.toFixed(1)}%
+            </p>
+            <p className="text-[9px] opacity-80 font-medium">Return on Total Cost Invested</p>
+          </div>
+
         </div>
       </div>
 
@@ -578,125 +894,198 @@ export default function Suppliers() {
         } : null}
       />
 
-      {/* Main Grid: Left = Multi-item Bill Form, Right = Pricing Index Feed */}
+      {/* ================= 4. MAIN ENTRY FORM (LEFT) & ACTIVE FEED (RIGHT) ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* ================= BILL ENTRY FORM (LEFT - 5 COLS) ================= */}
+        {/* LEFT: FLEXIBLE ENTRY FORM (Supports Single Item OR Multi-Item Batch) */}
         <div className="xl:col-span-5 space-y-6">
           <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
             
-            {/* Bill Header Info */}
+            {/* Header + Mode Switch (Single vs Batch) */}
             <div className="flex justify-between items-start border-b border-slate-100 dark:border-white/10 pb-4">
               <div>
                 <span className="px-2.5 py-1 bg-primary/10 dark:bg-blue-400/20 text-primary dark:text-blue-300 rounded-full text-[9px] font-black uppercase tracking-wider">
-                  {i18n.language === 'la' ? 'ໃບບິນໃໝ່' : 'NEW BILL ENTRY'}
+                  {formEntryMode === 'batch' ? 'MULTI-ITEM BILL' : 'SINGLE ENTRY'}
                 </span>
                 <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2 mt-1">
                   <Receipt className="w-4 h-4 text-emerald-500" />
-                  <span>{i18n.language === 'la' ? 'ບັນທຶກໃບບິນສັ່ງຊື້' : 'Create Procurement Bill'}</span>
+                  <span>{i18n.language === 'la' ? 'ບັນທຶກລາຍຈ່າຍ / ໃບບິນ' : 'Record Procurement & Expense'}</span>
                 </h3>
               </div>
 
-              {/* Auto Bill No Tag */}
-              <div className="text-right">
-                <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider block">
-                  Bill No (Auto)
-                </span>
-                <span className="px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-lg text-xs font-mono font-black tracking-wider inline-block mt-0.5">
-                  {generatedBillNo}
-                </span>
+              {/* Single vs Multi-Item Toggle */}
+              <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormEntryMode('batch');
+                  }}
+                  className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg transition-all ${
+                    formEntryMode === 'batch' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'
+                  }`}
+                >
+                  {i18n.language === 'la' ? 'ຫຼາຍລາຍການ' : 'Multi-Item'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormEntryMode('single');
+                    if (billItems.length > 1) {
+                      setBillItems([billItems[0]]);
+                    }
+                  }}
+                  className={`px-2.5 py-1 text-[10px] font-black uppercase rounded-lg transition-all ${
+                    formEntryMode === 'single' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'
+                  }`}
+                >
+                  {i18n.language === 'la' ? 'ລາຍການດ່ຽວ' : 'Single Item'}
+                </button>
               </div>
             </div>
 
-            <form onSubmit={handleSaveBillBatch} className="space-y-5">
+            <form onSubmit={handleSaveBillBatch} className="space-y-4">
               
-              {/* Row 1: Date & Time */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
-                    {i18n.language === 'la' ? 'ວັນທີຊື້ (Date)' : 'Date'}
+              {/* Row: Date, Time & Bill No */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    {i18n.language === 'la' ? 'ວັນທີ (Date)' : 'Date'}
                   </label>
                   <input 
                     type="date"
                     required
-                    className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold font-mono outline-none text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold font-mono outline-none text-slate-800 dark:text-white"
                     value={billDate}
                     onChange={e => setBillDate(e.target.value)}
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
                     {i18n.language === 'la' ? 'ເວລາ (Time)' : 'Time'}
                   </label>
                   <input 
                     type="time"
                     required
-                    className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold font-mono outline-none text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold font-mono outline-none text-slate-800 dark:text-white"
                     value={billTime}
                     onChange={e => setBillTime(e.target.value)}
                   />
                 </div>
-              </div>
-
-              {/* Row 2: Supplier & Currency */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
-                    {i18n.language === 'la' ? 'ຜູ້ສະໜອງ (Supplier)' : 'Supplier'}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    Bill No.
                   </label>
-                  <select 
-                    className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
-                    value={supplier}
-                    onChange={e => setSupplier(e.target.value)}
-                    required
-                  >
-                    <option value="CHANHOM" className="bg-white dark:bg-slate-800">CHANHOM (CH)</option>
-                    <option value="LATDA" className="bg-white dark:bg-slate-800">LATDA (LD)</option>
-                    <option value="HEAVENLY" className="bg-white dark:bg-slate-800">HEAVENLY (HV)</option>
-                    <option value="DMART" className="bg-white dark:bg-slate-800">DMART (DM)</option>
-                    <option value="MARRY ANN" className="bg-white dark:bg-slate-800">MARRY ANN (MA)</option>
-                    <option value="OTHER" className="bg-white dark:bg-slate-800">Other (OT)</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
-                    {i18n.language === 'la' ? 'ສະກຸນເງິນ (Currency)' : 'Currency'}
-                  </label>
-                  <div className="flex gap-2">
-                    <select 
-                      className="w-24 h-11 px-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
-                      value={currency}
-                      onChange={e => {
-                        const c = e.target.value;
-                        setCurrency(c);
-                        if (c === 'LAK') setExchangeRate(1);
-                      }}
-                    >
-                      <option value="LAK" className="bg-white dark:bg-slate-800">LAK (₭)</option>
-                      <option value="THB" className="bg-white dark:bg-slate-800">THB (฿)</option>
-                      <option value="USD" className="bg-white dark:bg-slate-800">USD ($)</option>
-                    </select>
-
-                    <input 
-                      type="number"
-                      step="any"
-                      placeholder="Rate"
-                      disabled={currency === 'LAK'}
-                      className="flex-1 h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-mono font-bold outline-none text-slate-800 dark:text-white disabled:opacity-30"
-                      value={currency === 'LAK' ? 1 : exchangeRate}
-                      onChange={e => setExchangeRate(parseFloat(e.target.value) || 1)}
-                    />
+                  <div className="w-full h-10 px-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[11px] font-mono font-black flex items-center justify-center">
+                    {generatedBillNo}
                   </div>
                 </div>
               </div>
 
-              {/* Receipt Image Upload (Finance Linked) */}
-              <div className="space-y-2 p-3.5 bg-slate-50 dark:bg-[#052659]/50 rounded-2xl border border-dashed border-slate-300 dark:border-white/10">
+              {/* Row: Supplier, Category & Payment Method */}
+              <div className="grid grid-cols-3 gap-2">
+                
+                {/* Supplier */}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    {i18n.language === 'la' ? 'ຜູ້ສະໜອງ' : 'Supplier'}
+                  </label>
+                  <select 
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    value={supplier}
+                    onChange={e => setSupplier(e.target.value)}
+                    required
+                  >
+                    <option value="CHANHOM">CHANHOM (CH)</option>
+                    <option value="LATDA">LATDA (LD)</option>
+                    <option value="HEAVENLY">HEAVENLY (HV)</option>
+                    <option value="DMART">DMART (DM)</option>
+                    <option value="MARRY ANN">MARRY ANN (MA)</option>
+                    <option value="OTHER">Other (OT)</option>
+                  </select>
+                </div>
+
+                {/* Category (Purchasing, Rental, Salary, Operation, Admin, Sales, Other) */}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    {i18n.language === 'la' ? 'ປະເພດລາຍການ' : 'Category'}
+                  </label>
+                  <select 
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    value={category}
+                    onChange={e => setCategory(e.target.value as ExpenseCategory)}
+                    required
+                  >
+                    <option value="purchasing">🛒 Purchasing (ວັດຖຸດິບ)</option>
+                    <option value="rental">🏠 Rental (ຄ່າເຊົ່າ)</option>
+                    <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
+                    <option value="operation">⚙️ Operation (ດຳເນີນງານ)</option>
+                    <option value="admin">💼 Admin (ບໍລິຫານ)</option>
+                    <option value="sales">📈 Sales (ຍອດຂາຍ/ລາຍຮັບ)</option>
+                    <option value="other">📦 Other (ອື່ນໆ)</option>
+                  </select>
+                </div>
+
+                {/* Payment Method (Cash, Onepay, LDB) */}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    {i18n.language === 'la' ? 'ຊ່ອງທາງການເງິນ' : 'Paid Via'}
+                  </label>
+                  <select 
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white"
+                    value={paymentMethod}
+                    onChange={e => setPaymentMethod(e.target.value as PaymentMethod)}
+                    required
+                  >
+                    <option value="Cash">💵 Cash (ເງິນສົດ)</option>
+                    <option value="Onepay">📱 Onepay (BCEL)</option>
+                    <option value="LDB">🏦 LDB (ທະນາຄານ)</option>
+                  </select>
+                </div>
+
+              </div>
+
+              {/* Currency & Exchange Rate */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    Currency
+                  </label>
+                  <select 
+                    className="w-full h-10 px-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
+                    value={currency}
+                    onChange={e => {
+                      const c = e.target.value;
+                      setCurrency(c);
+                      if (c === 'LAK') setExchangeRate(1);
+                    }}
+                  >
+                    <option value="LAK">LAK (₭)</option>
+                    <option value="THB">THB (฿)</option>
+                    <option value="USD">USD ($)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
+                    Exchange Rate to LAK
+                  </label>
+                  <input 
+                    type="number"
+                    step="any"
+                    disabled={currency === 'LAK'}
+                    className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-mono font-bold outline-none text-slate-800 dark:text-white disabled:opacity-30"
+                    value={currency === 'LAK' ? 1 : exchangeRate}
+                    onChange={e => setExchangeRate(parseFloat(e.target.value) || 1)}
+                  />
+                </div>
+              </div>
+
+              {/* Receipt Image Upload */}
+              <div className="space-y-2 p-3 bg-slate-50 dark:bg-[#052659]/50 rounded-2xl border border-dashed border-slate-300 dark:border-white/10">
                 <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                  <span className="text-[9.5px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                     <ImageIcon className="w-3.5 h-3.5 text-blue-500" />
-                    {i18n.language === 'la' ? 'ຮູບໃບບິນ / ໃບຮັບເງິນ (Receipt Image)' : 'Receipt Image (Auto-sync with Finance)'}
+                    {i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Auto-sync Finance)' : 'Receipt Image'}
                   </span>
                   {billImageBase64 && (
                     <button
@@ -710,19 +1099,15 @@ export default function Suppliers() {
                 </div>
 
                 {billImageBase64 ? (
-                  <div className="relative group rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 max-h-36 bg-black/10 flex items-center justify-center">
-                    <img 
-                      src={billImageBase64} 
-                      alt="Receipt Preview" 
-                      className="w-full h-36 object-cover"
-                    />
+                  <div className="relative group rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 max-h-32 bg-black/10 flex items-center justify-center">
+                    <img src={billImageBase64} alt="Receipt" className="w-full h-32 object-cover" />
                     <button
                       type="button"
                       onClick={() => setPreviewImageUrl(billImageBase64)}
                       className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 text-white text-xs font-bold"
                     >
                       <Eye className="w-4 h-4" />
-                      <span>{i18n.language === 'la' ? 'ກົດເບິ່ງຮູບໃຫຍ່' : 'View Full Image'}</span>
+                      <span>{i18n.language === 'la' ? 'ເບິ່ງຮູບ' : 'View'}</span>
                     </button>
                   </div>
                 ) : (
@@ -733,63 +1118,50 @@ export default function Suppliers() {
                       accept="image/*"
                       onChange={handleImageUpload}
                       className="hidden"
-                      id="bill-image-upload"
+                      id="bill-upload-input"
                     />
                     <label 
-                      htmlFor="bill-image-upload"
-                      className="w-full py-3 px-4 rounded-xl border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5 transition-all flex items-center justify-center gap-2 cursor-pointer text-slate-500 dark:text-slate-400 text-xs font-bold"
+                      htmlFor="bill-upload-input"
+                      className="w-full py-2.5 px-3 rounded-xl border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5 transition-all flex items-center justify-center gap-2 cursor-pointer text-slate-500 dark:text-slate-400 text-xs font-bold"
                     >
                       <Upload className="w-4 h-4 text-emerald-500" />
-                      <span>{i18n.language === 'la' ? 'ອັບໂຫຼດຮູບໃບບິນ (JPG/PNG)' : 'Upload Receipt Photo'}</span>
+                      <span>{i18n.language === 'la' ? 'ອັບໂຫຼດຮູບໃບບິນ' : 'Upload Receipt Photo'}</span>
                     </label>
                   </div>
                 )}
               </div>
 
-              {/* Bill Remark */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
-                  {i18n.language === 'la' ? 'ໝາຍເຫດລວມຂອງໃບບິນ' : 'Bill Note / Memo'}
-                </label>
-                <input 
-                  type="text"
-                  placeholder={i18n.language === 'la' ? 'ເຊັ່ນ: ໃບບິນຮອບເຊົ້າ, ສົ່ງດ່ວນ...' : 'e.g. Morning delivery batch...'}
-                  className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-medium outline-none text-slate-800 dark:text-white"
-                  value={billRemark}
-                  onChange={e => setBillRemark(e.target.value)}
-                />
-              </div>
-
-              {/* Multi-Item Entries List */}
-              <div className="space-y-4 pt-2">
+              {/* Items List */}
+              <div className="space-y-3 pt-2">
                 <div className="flex justify-between items-center">
-                  <span className="text-[11px] font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-1.5">
-                    <ShoppingBag className="w-3.5 h-3.5 text-primary dark:text-blue-400" />
-                    <span>{i18n.language === 'la' ? 'ລາຍການສິນຄ້າໃນບິນ' : 'Bill Items'} ({billItems.length})</span>
+                  <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-1.5">
+                    <ShoppingBag className="w-3.5 h-3.5 text-primary" />
+                    <span>{formEntryMode === 'batch' ? `ລາຍການສິນຄ້າ (${billItems.length})` : 'ລາຍການສິນຄ້າ'}</span>
                   </span>
                   
-                  <button
-                    type="button"
-                    onClick={addNewItemRow}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>{i18n.language === 'la' ? 'ເພີ່ມລາຍການ' : 'Add Item'}</span>
-                  </button>
+                  {formEntryMode === 'batch' && (
+                    <button
+                      type="button"
+                      onClick={addNewItemRow}
+                      className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[9.5px] font-black uppercase transition-all"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>{i18n.language === 'la' ? 'ເພີ່ມລາຍການ' : 'Add Item'}</span>
+                    </button>
+                  )}
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {billItems.map((item, index) => {
                     const selectedProd = products.find(p => p.id === item.productId);
 
                     return (
                       <div 
                         key={item.id} 
-                        className="p-4 rounded-2xl bg-slate-50/80 dark:bg-[#052659]/60 border border-slate-200/80 dark:border-white/10 space-y-3 relative transition-all"
+                        className="p-3.5 rounded-2xl bg-slate-50/80 dark:bg-[#052659]/60 border border-slate-200/80 dark:border-white/10 space-y-2.5"
                       >
-                        {/* Item Row Header */}
                         <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 bg-white dark:bg-white/10 text-slate-600 dark:text-slate-300 rounded-md font-mono">
+                          <span className="text-[9.5px] font-black uppercase px-2 py-0.5 bg-white dark:bg-white/10 text-slate-600 dark:text-slate-300 rounded-md font-mono">
                             #{index + 1}
                           </span>
 
@@ -797,153 +1169,116 @@ export default function Suppliers() {
                             <button
                               type="button"
                               onClick={() => removeItemRow(index)}
-                              className="p-1 text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
-                              title="Delete Item"
+                              className="p-1 text-slate-400 hover:text-red-500 transition-colors"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           )}
                         </div>
 
-                        {/* Product Search & Dropdown */}
+                        {/* Product Search */}
                         <div className="space-y-1 relative">
-                          <label className="text-[9.5px] font-bold uppercase text-slate-500 dark:text-slate-400">
-                            {t('product_resource')}
-                          </label>
-                          <div className="relative">
-                            <input 
-                              type="text"
-                              required
-                              className={`w-full h-11 px-3 pr-8 rounded-xl bg-white dark:bg-[#073069] border text-xs font-bold outline-none transition-all ${
-                                !item.productId && item.productSearch 
-                                  ? 'border-amber-400 text-amber-600' 
-                                  : 'border-slate-200 dark:border-white/10 text-slate-800 dark:text-white'
-                              }`}
-                              placeholder={t('search_params') + "..."}
-                              value={item.isDropdownOpen ? item.productSearch : (selectedProd?.name || item.productSearch)}
-                              onFocus={() => {
-                                if (selectedProd && !item.productSearch) {
-                                  updateItemRow(index, { productSearch: selectedProd.name });
-                                }
-                                updateItemRow(index, { isDropdownOpen: true });
-                              }}
-                              onBlur={() => {
-                                setTimeout(() => updateItemRow(index, { isDropdownOpen: false }), 250);
-                              }}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateItemRow(index, {
-                                  productSearch: val,
-                                  isDropdownOpen: true,
-                                  productId: ''
-                                });
-                              }}
-                            />
-                            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                          <input 
+                            type="text"
+                            required
+                            className={`w-full h-10 px-3 pr-8 rounded-xl bg-white dark:bg-[#073069] border text-xs font-bold outline-none ${
+                              !item.productId && item.productSearch ? 'border-amber-400' : 'border-slate-200 dark:border-white/10 text-slate-800 dark:text-white'
+                            }`}
+                            placeholder={t('search_params') + "..."}
+                            value={item.isDropdownOpen ? item.productSearch : (selectedProd?.name || item.productSearch)}
+                            onFocus={() => {
+                              if (selectedProd && !item.productSearch) updateItemRow(index, { productSearch: selectedProd.name });
+                              updateItemRow(index, { isDropdownOpen: true });
+                            }}
+                            onBlur={() => setTimeout(() => updateItemRow(index, { isDropdownOpen: false }), 250)}
+                            onChange={(e) => updateItemRow(index, { productSearch: e.target.value, isDropdownOpen: true, productId: '' })}
+                          />
+                          <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
 
-                            {/* Dropdown Options */}
-                            {item.isDropdownOpen && (
-                              <div className="absolute z-50 left-0 right-0 mt-1 bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl max-h-48 overflow-y-auto">
-                                {products
-                                  .filter(p => !item.productSearch || p.name.toLowerCase().includes(item.productSearch.toLowerCase()))
-                                  .map(p => (
-                                    <button
-                                      key={p.id}
-                                      type="button"
-                                      className="w-full text-left p-2.5 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors border-b border-slate-50 dark:border-white/5 last:border-none flex justify-between items-center"
-                                      onClick={() => {
-                                        updateItemRow(index, {
-                                          productId: p.id,
-                                          productSearch: p.name,
-                                          unit: p.unit || item.unit,
-                                          quantityPerUnit: p.packSize || 1,
-                                          isDropdownOpen: false
-                                        });
-                                      }}
-                                    >
-                                      <span className="text-xs font-bold text-slate-800 dark:text-white">{p.name}</span>
-                                      <span className="text-[9px] text-slate-400 font-bold uppercase">{p.unit || 'UNIT'}</span>
-                                    </button>
-                                ))}
-
-                                {item.productSearch && !products.some(p => p.name.toLowerCase() === item.productSearch.toLowerCase()) && (
+                          {item.isDropdownOpen && (
+                            <div className="absolute z-50 left-0 right-0 mt-1 bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl max-h-44 overflow-y-auto">
+                              {products
+                                .filter(p => !item.productSearch || p.name.toLowerCase().includes(item.productSearch.toLowerCase()))
+                                .map(p => (
                                   <button
+                                    key={p.id}
                                     type="button"
-                                    className="w-full text-left p-3 bg-primary/5 hover:bg-primary/10 text-primary transition-colors text-xs font-bold uppercase"
-                                    onClick={() => addUnlistedProductForItem(item.productSearch, index)}
+                                    className="w-full text-left p-2.5 hover:bg-slate-100 dark:hover:bg-white/10 border-b border-slate-50 dark:border-white/5 flex justify-between items-center"
+                                    onClick={() => {
+                                      updateItemRow(index, {
+                                        productId: p.id,
+                                        productSearch: p.name,
+                                        unit: p.unit || item.unit,
+                                        quantityPerUnit: p.packSize || 1,
+                                        isDropdownOpen: false
+                                      });
+                                    }}
                                   >
-                                    + Add Custom "{item.productSearch}"
+                                    <span className="text-xs font-bold text-slate-800 dark:text-white">{p.name}</span>
+                                    <span className="text-[9px] text-slate-400 font-bold uppercase">{p.unit || 'UNIT'}</span>
                                   </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
+                              ))}
+
+                              {item.productSearch && !products.some(p => p.name.toLowerCase() === item.productSearch.toLowerCase()) && (
+                                <button
+                                  type="button"
+                                  className="w-full text-left p-2.5 bg-primary/5 text-primary text-xs font-bold uppercase"
+                                  onClick={() => addUnlistedProductForItem(item.productSearch, index)}
+                                >
+                                  + Add Custom "{item.productSearch}"
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
 
-                        {/* Price Mode Toggle (Total vs Per Pack) */}
-                        <div className="grid grid-cols-2 gap-2 bg-slate-200/50 dark:bg-black/20 p-1 rounded-xl">
+                        {/* Price Mode Toggle */}
+                        <div className="grid grid-cols-2 gap-1.5 bg-slate-200/50 dark:bg-black/20 p-1 rounded-xl">
                           <button
                             type="button"
                             onClick={() => updateItemRow(index, { priceMode: 'total' })}
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black transition-all ${
-                              item.priceMode === 'total'
-                                ? 'bg-[#052659] text-white shadow-xs'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
-                            }`}
+                            className={`py-1 rounded-lg text-[9.5px] font-black ${item.priceMode === 'total' ? 'bg-[#052659] text-white' : 'text-slate-500'}`}
                           >
-                            {i18n.language === 'la' ? 'ລາຄາລວມ (Total)' : 'Total Price'}
+                            Total Price
                           </button>
                           <button
                             type="button"
                             onClick={() => updateItemRow(index, { priceMode: 'per_pack' })}
-                            className={`py-1.5 px-2 rounded-lg text-[10px] font-black transition-all ${
-                              item.priceMode === 'per_pack'
-                                ? 'bg-[#052659] text-white shadow-xs'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
-                            }`}
+                            className={`py-1 rounded-lg text-[9.5px] font-black ${item.priceMode === 'per_pack' ? 'bg-[#052659] text-white' : 'text-slate-500'}`}
                           >
-                            {i18n.language === 'la' ? 'ລາຄາ/ແພັກ (Per Pack)' : 'Per Pack'}
+                            Per Pack
                           </button>
                         </div>
 
-                        {/* Price, Qty & Unit inputs */}
+                        {/* Price, Qty & Unit */}
                         <div className="grid grid-cols-12 gap-2">
-                          <div className="col-span-5 space-y-1">
-                            <label className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400">
-                              {i18n.language === 'la' ? 'ລາຄາ' : 'Price'} ({currency})
-                            </label>
+                          <div className="col-span-5">
                             <input 
                               type="text"
                               required
-                              placeholder="0"
-                              className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white"
+                              placeholder="Price"
+                              className="w-full h-9 px-2.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white"
                               value={item.displayPrice}
                               onChange={e => handleItemPriceChange(index, e.target.value)}
                             />
                           </div>
 
-                          <div className="col-span-3 space-y-1">
-                            <label className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400">
-                              {i18n.language === 'la' ? 'ຈຳນວນແພັກ' : 'Qty'}
-                            </label>
+                          <div className="col-span-3">
                             <input 
                               type="number"
                               min="1"
                               step="any"
                               required
-                              placeholder="1"
-                              className="w-full h-10 px-2 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-center text-slate-800 dark:text-white"
+                              placeholder="Qty"
+                              className="w-full h-9 px-2 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-center text-slate-800 dark:text-white"
                               value={item.quantity || ''}
                               onChange={e => updateItemRow(index, { quantity: parseFloat(e.target.value) || 1 })}
                             />
                           </div>
 
-                          <div className="col-span-4 space-y-1">
-                            <label className="text-[9px] font-black uppercase text-slate-500 dark:text-slate-400">
-                              {i18n.language === 'la' ? 'ຫົວໜ່ວຍ' : 'Unit'}
-                            </label>
+                          <div className="col-span-4">
                             <select 
-                              className="w-full h-10 px-2 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[10px] font-black uppercase text-slate-800 dark:text-white"
+                              className="w-full h-9 px-2 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[9.5px] font-black uppercase text-slate-800 dark:text-white"
                               value={item.unit}
                               onChange={e => updateItemRow(index, { unit: e.target.value })}
                             >
@@ -960,50 +1295,37 @@ export default function Suppliers() {
                           </div>
                         </div>
 
-                        {/* Optional Sub-item packing ratio & remark */}
-                        <div className="grid grid-cols-2 gap-2 pt-1">
-                          <input 
-                            type="number"
-                            min="1"
-                            placeholder="Items per pack (e.g. 1)"
-                            className="w-full h-9 px-2.5 rounded-lg bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[10px] font-bold text-slate-800 dark:text-white"
-                            value={item.quantityPerUnit || ''}
-                            onChange={e => updateItemRow(index, { quantityPerUnit: parseFloat(e.target.value) || 1 })}
-                            title="Sub-items inside one pack"
-                          />
-                          <input 
-                            type="text"
-                            placeholder="Item note / remark..."
-                            className="w-full h-9 px-2.5 rounded-lg bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[10px] font-medium text-slate-800 dark:text-white"
-                            value={item.remark}
-                            onChange={e => updateItemRow(index, { remark: e.target.value })}
-                          />
-                        </div>
+                        <input 
+                          type="text"
+                          placeholder="Item remark / memo..."
+                          className="w-full h-8 px-2.5 rounded-lg bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[10px] text-slate-800 dark:text-white"
+                          value={item.remark}
+                          onChange={e => updateItemRow(index, { remark: e.target.value })}
+                        />
                       </div>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Bill Grand Total Card */}
-              <div className="p-4 bg-[#052659] text-white rounded-2xl flex justify-between items-center shadow-lg">
+              {/* Total Summary */}
+              <div className="p-3.5 bg-[#052659] text-white rounded-2xl flex justify-between items-center shadow-md">
                 <div>
                   <p className="text-[9px] font-bold uppercase tracking-widest text-[#5483B3]">
-                    {i18n.language === 'la' ? 'ຍອດລວມທັງໝົດຂອງໃບບິນ (Grand Total)' : 'Bill Grand Total (LAK)'}
+                    Grand Total ({currency})
                   </p>
-                  <p className="text-xl font-black tracking-tight mt-0.5">
+                  <p className="text-lg font-black font-mono">
                     {Math.round(grandTotalLAK).toLocaleString()} ₭
                   </p>
-                  <p className="text-[9.5px] text-blue-200/70 font-mono mt-0.5">
-                    {billItems.length} {billItems.length > 1 ? 'items' : 'item'} • {generatedBillNo}
-                  </p>
                 </div>
-                <div className="p-3 bg-white/10 rounded-xl">
-                  <Receipt className="w-6 h-6 text-[#5483B3]" />
+                <div className="text-right">
+                  <span className="text-[9px] font-mono px-2 py-0.5 bg-white/10 rounded-md">
+                    {paymentMethod} • {category}
+                  </span>
                 </div>
               </div>
 
-              {/* Save Batch Button */}
+              {/* Save Button */}
               <button 
                 type="submit" 
                 disabled={saveLoading}
@@ -1014,47 +1336,31 @@ export default function Suppliers() {
                 ) : (
                   <Save className="w-4 h-4" />
                 )}
-                <span>
-                  {saveLoading 
-                    ? 'SAVING BILL...' 
-                    : (i18n.language === 'la' ? `ບັນທຶກໃບບິນ (${billItems.length} ລາຍການ)` : `Save Bill (${billItems.length} items)`)}
-                </span>
+                <span>{saveLoading ? 'SAVING...' : `ບັນທຶກລາຍຈ່າຍ (${generatedBillNo})`}</span>
               </button>
             </form>
           </div>
         </div>
 
-        {/* ================= PRICING INDEX FEED & TABLE (RIGHT - 7 COLS) ================= */}
+        {/* RIGHT: PRICING & PROCUREMENT INDEX FEED */}
         <div className="xl:col-span-7 space-y-6">
 
-          {/* Quick Chart summary of last 10 entries */}
+          {/* Quick Chart */}
           <div className="high-density-card p-0 flex flex-col overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             <div className="p-3.5 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/5 flex justify-between items-center">
               <h4 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
-                <BarChart3 className="w-3.5 h-3.5 text-primary dark:text-blue-400" />
-                <span>{i18n.language === 'la' ? 'ດັດຊະນີລາຄາ 10 ລາຍການລ່າສຸດ (Recent Pricing Feed)' : 'Recent Pricing Feed (Last 10 entries)'}</span>
+                <BarChart3 className="w-3.5 h-3.5 text-primary" />
+                <span>ດັດຊະນີລາຄາ 10 ລາຍການລ່າສຸດ (Recent Pricing Feed)</span>
               </h4>
             </div>
             <div className="p-4 h-[160px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={lastTenPrices}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" opacity={0.5} />
-                  <XAxis 
-                    dataKey="supplier" 
-                    tick={{fontSize: 9, fontWeight: 700}} 
-                    axisLine={false}
-                    tickLine={false}
-                  />
+                  <XAxis dataKey="supplier" tick={{fontSize: 9, fontWeight: 700}} axisLine={false} tickLine={false} />
                   <YAxis hide />
                   <Tooltip 
-                    contentStyle={{ 
-                      backgroundColor: '#052659', 
-                      border: '1px solid rgba(255,255,255,0.1)', 
-                      borderRadius: '12px', 
-                      fontSize: '11px',
-                      fontWeight: 800,
-                      color: '#fff'
-                    }}
+                    contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', fontWeight: 800, color: '#fff' }}
                     formatter={(val: number) => [`${val.toLocaleString()} ₭`, 'Total LAK']}
                   />
                   <Bar dataKey="totalLAK" fill="#3b82f6" radius={[6, 6, 0, 0]} />
@@ -1063,10 +1369,10 @@ export default function Suppliers() {
             </div>
           </div>
 
-          {/* Active Pricing Index Table with Filter & Export */}
+          {/* Records Table */}
           <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
-            {/* Table Control Header */}
+            {/* Header controls */}
             <div className="p-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/5 flex flex-wrap justify-between items-center gap-3 sticky top-0 z-10 backdrop-blur-md">
               <div className="flex items-center gap-3">
                 <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">
@@ -1075,7 +1381,6 @@ export default function Suppliers() {
                 <button 
                   onClick={handleExport}
                   className="flex items-center gap-1 text-[9px] font-black uppercase text-blue-500 hover:text-blue-600 transition-colors"
-                  title="Export to Excel"
                 >
                   <Download className="w-3 h-3" />
                   Excel
@@ -1083,33 +1388,28 @@ export default function Suppliers() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Date Filter */}
-                <div className="flex items-center gap-1 border border-slate-200 dark:border-white/10 p-1 bg-white dark:bg-slate-800 rounded-xl shadow-xs">
-                  <span className="text-[9px] font-black uppercase text-slate-400 pl-1">
-                    {i18n.language === 'la' ? 'ວັນທີ:' : 'Date:'}
-                  </span>
+                <div className="flex items-center gap-1 border border-slate-200 dark:border-white/10 p-1 bg-white dark:bg-slate-800 rounded-xl">
                   <input 
                     type="date" 
                     value={selectedFilterDate}
                     onChange={e => setSelectedFilterDate(e.target.value)}
-                    className="text-[10px] font-bold font-mono py-0.5 px-1 outline-none bg-transparent cursor-pointer text-slate-800 dark:text-white"
+                    className="text-[10px] font-bold font-mono py-0.5 px-1 outline-none bg-transparent text-slate-800 dark:text-white"
                   />
-                  {selectedFilterDate ? (
+                  {selectedFilterDate && (
                     <button 
                       type="button"
                       onClick={() => setSelectedFilterDate('')}
-                      className="px-1.5 py-0.5 text-[8px] font-black uppercase bg-red-50 hover:bg-red-100 text-red-500 rounded-md"
+                      className="px-1.5 py-0.5 text-[8px] font-black uppercase bg-red-50 text-red-500 rounded-md"
                     >
-                      {i18n.language === 'la' ? 'ທັງໝົດ' : 'All'}
+                      All
                     </button>
-                  ) : null}
+                  )}
                 </div>
 
-                {/* Text Filter */}
                 <div className="relative">
                   <input 
                     type="text" 
-                    placeholder="Search product, supplier, #bill..." 
+                    placeholder="Search product, #bill, category..." 
                     className="text-[10px] font-bold py-1.5 pl-7 pr-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-xl outline-none focus:ring-1 focus:ring-primary w-44 shadow-xs"
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
@@ -1119,18 +1419,18 @@ export default function Suppliers() {
               </div>
             </div>
 
-            {/* Table Contents */}
+            {/* Table */}
             <div className="flex-1 overflow-x-auto">
               <table className="w-full text-left">
-                <thead className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 dark:text-blue-200/40 bg-slate-100/50 dark:bg-white/5">
+                <thead className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-blue-200/40 bg-slate-100/50 dark:bg-white/5">
                   <tr>
-                    <th className="p-4">{i18n.language === 'la' ? 'ເລກບິນ / ວັນທີ' : 'Bill No / Date'}</th>
-                    <th className="p-4">{t('resource_identifier')}</th>
-                    <th className="p-4">{t('origin_supplier')}</th>
-                    <th className="p-4">{t('valuation_lak')}</th>
-                    <th className="p-4 text-right">{t('units')}</th>
-                    <th className="p-4 text-center">{i18n.language === 'la' ? 'ໃບບິນ' : 'Receipt'}</th>
-                    <th className="p-4 text-right">{t('ops')}</th>
+                    <th className="p-3.5">Bill No / Date</th>
+                    <th className="p-3.5">Category</th>
+                    <th className="p-3.5">Item Name</th>
+                    <th className="p-3.5">Paid Via</th>
+                    <th className="p-3.5">Valuation (LAK)</th>
+                    <th className="p-3.5 text-center">Receipt</th>
+                    <th className="p-3.5 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/5 text-xs">
@@ -1139,10 +1439,12 @@ export default function Suppliers() {
                       const prodName = products.find(prod => prod.id === p.productId)?.name || '';
                       const billNumber = p.billNo || '';
                       const supplierName = p.supplier || '';
+                      const catName = p.category || '';
                       const matchesSearch = 
                         prodName.toLowerCase().includes(filter.toLowerCase()) || 
                         supplierName.toLowerCase().includes(filter.toLowerCase()) ||
-                        billNumber.toLowerCase().includes(filter.toLowerCase());
+                        billNumber.toLowerCase().includes(filter.toLowerCase()) ||
+                        catName.toLowerCase().includes(filter.toLowerCase());
                       const matchesDate = !selectedFilterDate || p.date === selectedFilterDate;
                       return matchesSearch && matchesDate;
                     })
@@ -1151,85 +1453,78 @@ export default function Suppliers() {
                       const isNew = price.totalPriceLAK !== undefined;
                       const totalLAK = isNew
                         ? Number(price.totalPriceLAK || 0)
-                        : (price.currency === 'LAK' ? Number(price.priceOriginal || 0) : Number(price.priceOriginal || 0) * Number(price.exchangeRate || 1));
-                      const packPrice = isNew ? Number(price.priceLAK || 0) : totalLAK / (Number(price.quantity) || 1);
+                        : (price.currency === 'LAK' ? Number(price.priceOriginal || 0) : Number(price.priceOriginal || 0) * Number(price.exchangeRate || 1)) * (Number(price.quantity) || 1);
 
                       return (
                         <tr key={price.id} className="hover:bg-slate-50/80 dark:hover:bg-white/5 transition-all group">
+                          
                           {/* Bill No & Date */}
-                          <td className="p-4">
-                            {price.billNo ? (
-                              <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-md text-[9.5px] font-mono font-black tracking-wider block mb-1 w-fit">
+                          <td className="p-3.5">
+                            {price.billNo && (
+                              <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded text-[9px] font-mono font-bold block mb-0.5 w-fit">
                                 {price.billNo}
                               </span>
-                            ) : null}
-                            <div className="text-[11px] font-bold text-slate-800 dark:text-white">
-                              {price.date || (price.createdAt ? format(price.createdAt.toDate(), 'dd MMM yyyy') : 'Pending')}
-                            </div>
-                            <div className="text-[9px] font-bold text-slate-400">
-                              {price.time || ''}
-                            </div>
-                          </td>
-
-                          {/* Product Name & Details */}
-                          <td className="p-4">
-                            <div className="text-[12px] font-bold text-slate-800 dark:text-blue-300">
-                              {item?.name || 'Unlabeled Resource'}
-                            </div>
-                            {price.remark && (
-                              <p className="text-[9.5px] italic text-pink-500 dark:text-pink-400 mt-0.5 max-w-[150px] truncate">
-                                "{price.remark}"
-                              </p>
                             )}
-                          </td>
-
-                          {/* Supplier */}
-                          <td className="p-4">
-                            <span className="px-2.5 py-1 bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-white rounded-lg text-[9.5px] font-black uppercase">
-                              {price.supplier}
+                            <span className="text-[11px] font-bold text-slate-800 dark:text-white block">
+                              {price.date || format(price.createdAt?.toDate() || new Date(), 'dd/MM/yyyy')}
                             </span>
                           </td>
 
-                          {/* Valuation in LAK */}
-                          <td className="p-4">
-                            <div className="text-[12px] font-black text-slate-900 dark:text-white font-mono">
+                          {/* Category Badge */}
+                          <td className="p-3.5">
+                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-white rounded-md text-[9px] font-black uppercase">
+                              {price.category || 'purchasing'}
+                            </span>
+                          </td>
+
+                          {/* Product / Supplier */}
+                          <td className="p-3.5">
+                            <span className="text-[11px] font-bold text-slate-800 dark:text-blue-300 block">
+                              {item?.name || 'Item'}
+                            </span>
+                            <span className="text-[9px] text-slate-400 uppercase">
+                              {price.supplier} • {price.quantity} {price.unit || 'UNIT'}
+                            </span>
+                          </td>
+
+                          {/* Payment Method */}
+                          <td className="p-3.5">
+                            <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${
+                              price.paymentMethod === 'Cash' 
+                                ? 'bg-emerald-500/10 text-emerald-600' 
+                                : price.paymentMethod === 'Onepay' 
+                                  ? 'bg-red-500/10 text-red-500' 
+                                  : 'bg-blue-500/10 text-blue-500'
+                            }`}>
+                              {price.paymentMethod || 'Cash'}
+                            </span>
+                          </td>
+
+                          {/* Valuation */}
+                          <td className="p-3.5">
+                            <span className="text-[11px] font-mono font-black text-slate-900 dark:text-white block">
                               {Math.round(totalLAK).toLocaleString()} ₭
-                            </div>
-                            <div className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400/90 mt-0.5">
-                              {Math.round(packPrice).toLocaleString()} ₭ / {price.unit || 'UNIT'}
-                            </div>
+                            </span>
                           </td>
 
-                          {/* Quantity & Sub-items */}
-                          <td className="p-4 text-right">
-                            <span className="text-[12px] font-black text-slate-900 dark:text-white">{price.quantity}</span>
-                            <span className="text-[9.5px] font-bold text-slate-400 uppercase ml-1">{price.unit || 'UNIT'}</span>
-                            {price.quantityPerUnit > 1 && (
-                              <div className="text-[8.5px] font-bold text-blue-500 dark:text-blue-400 mt-0.5">
-                                ({price.quantity * price.quantityPerUnit} sub-items)
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Attached Receipt Image Button */}
-                          <td className="p-4 text-center">
+                          {/* Receipt */}
+                          <td className="p-3.5 text-center">
                             {price.billImageUrl ? (
                               <button
                                 type="button"
                                 onClick={() => setPreviewImageUrl(price.billImageUrl)}
-                                className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl transition-all cursor-pointer inline-flex items-center gap-1"
-                                title="View Attached Receipt"
+                                className="p-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-lg"
+                                title="View Receipt"
                               >
                                 <ImageIcon className="w-3.5 h-3.5" />
-                                <span className="text-[8.5px] font-black uppercase">View</span>
                               </button>
                             ) : (
-                              <span className="text-[9px] text-slate-300 dark:text-slate-600 font-bold">-</span>
+                              <span className="text-slate-300">-</span>
                             )}
                           </td>
 
-                          {/* Operations */}
-                          <td className="p-4 text-right">
+                          {/* Action */}
+                          <td className="p-3.5 text-right">
                             <div className="flex gap-1 justify-end opacity-0 group-hover:opacity-100 transition-all">
                               <button 
                                 onClick={() => {
@@ -1240,7 +1535,7 @@ export default function Suppliers() {
                                     unit: price.unit || item?.unit || 'UNIT'
                                   });
                                 }}
-                                className="p-2 text-slate-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-white/10 rounded-xl transition-all"
+                                className="p-1.5 text-slate-400 hover:text-blue-500"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
@@ -1250,53 +1545,39 @@ export default function Suppliers() {
                                   setPendingAction(price.id);
                                   setShowApprovalModal(true);
                                 }}
-                                className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-white/10 rounded-xl transition-all"
+                                className="p-1.5 text-slate-400 hover:text-red-500"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           </td>
+
                         </tr>
                       );
                     })}
                 </tbody>
               </table>
-
-              {supplierPrices.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                  <Receipt className="w-10 h-10 mb-2 opacity-20" />
-                  <p className="text-xs font-bold uppercase tracking-widest opacity-60">No procurement records registered yet</p>
-                </div>
-              )}
             </div>
           </div>
         </div>
+
       </div>
 
-      {/* ================= RECEIPT VIEWER POPUP MODAL ================= */}
+      {/* ================= RECEIPT PREVIEW MODAL ================= */}
       {previewImageUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-2xl rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col space-y-4 max-h-[90vh]">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h4 className="text-sm font-black text-slate-800 dark:text-white uppercase flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-emerald-500" />
-                <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Attached Receipt Image)' : 'Attached Receipt View'}</span>
+                <span>Attached Receipt View</span>
               </h4>
-              <button 
-                type="button" 
-                onClick={() => setPreviewImageUrl(null)}
-                className="p-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl"
-              >
+              <button type="button" onClick={() => setPreviewImageUrl(null)}>
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
-
-            <div className="flex-1 overflow-auto rounded-2xl bg-black/5 dark:bg-black/20 flex items-center justify-center p-2">
-              <img 
-                src={previewImageUrl} 
-                alt="Receipt Full View" 
-                className="max-h-[70vh] w-auto object-contain rounded-xl shadow-md"
-              />
+            <div className="flex-1 overflow-auto rounded-2xl bg-black/5 flex items-center justify-center p-2">
+              <img src={previewImageUrl} alt="Receipt Preview" className="max-h-[70vh] w-auto object-contain rounded-xl" />
             </div>
           </div>
         </div>
@@ -1305,88 +1586,54 @@ export default function Suppliers() {
       {/* ================= PRODUCT MANAGER MODAL ================= */}
       {showProductManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-[#073069] w-full max-w-lg rounded-3xl p-6 md:p-8 shadow-2xl border border-white/10 flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-white dark:bg-[#073069] w-full max-w-lg rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight">Manage Items</h3>
-                <p className="text-[10px] font-bold text-primary dark:text-blue-400 uppercase tracking-widest mt-0.5">Edit or Delete database resources</p>
+                <h3 className="text-base font-black text-slate-800 dark:text-white uppercase">Manage Items</h3>
                 <button 
                   type="button"
                   onClick={() => setShowMergeModal(true)}
-                  className="mt-2 text-[9.5px] font-black text-amber-500 bg-amber-500/10 hover:bg-amber-500/20 py-1 px-3 rounded-full cursor-pointer transition flex items-center gap-1"
+                  className="mt-1 text-[9px] font-black text-amber-500 bg-amber-500/10 px-2.5 py-0.5 rounded-full"
                 >
-                  <span>🔄 ໂຮມສິນຄ້າຊ້ຳຊ້ອນ / Merge Duplicates</span>
+                  🔄 Merge Duplicates
                 </button>
               </div>
-              <button type="button" onClick={() => setShowProductManager(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl">
+              <button type="button" onClick={() => setShowProductManager(false)}>
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
               {products.map(p => (
-                <div key={p.id} className="p-3.5 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-between group">
-                  <div className="flex-1 mr-3">
+                <div key={p.id} className="p-3 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-between group">
+                  <div className="flex-1 mr-2">
                     {editingProduct?.id === p.id ? (
-                      <div className="space-y-2">
-                        <div className="flex gap-2">
-                          <input 
-                            autoFocus
-                            className="flex-1 h-9 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white"
-                            value={editProductName}
-                            onChange={e => setEditProductName(e.target.value)}
-                            onKeyDown={e => e.key === 'Enter' && handleUpdateProductName(p.id)}
-                          />
-                          <button 
-                            type="button"
-                            onClick={() => handleUpdateProductName(p.id)}
-                            className="p-2 bg-emerald-500 text-white rounded-xl hover:scale-105 transition-transform"
-                          >
-                            <Check className="w-4 h-4" />
-                          </button>
-                          <button 
-                            type="button"
-                            onClick={() => setEditingProduct(null)}
-                            className="p-2 bg-slate-200 dark:bg-white/10 rounded-xl"
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
+                      <div className="flex gap-2">
                         <input 
-                          className="w-full h-8 px-3 rounded-lg bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-800 dark:text-white"
-                          placeholder="Unit (e.g. ml, g, pcs, BOX...)"
-                          value={editProductUnit}
-                          onChange={e => setEditProductUnit(e.target.value)}
+                          className="flex-1 h-8 px-2 rounded-lg bg-white dark:bg-[#073069] border text-xs"
+                          value={editProductName}
+                          onChange={e => setEditProductName(e.target.value)}
                         />
+                        <button type="button" onClick={() => handleUpdateProductName(p.id)} className="p-1.5 bg-emerald-500 text-white rounded-lg">
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                        <button type="button" onClick={() => setEditingProduct(null)} className="p-1.5 bg-slate-200 dark:bg-white/10 rounded-lg">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     ) : (
                       <div>
                         <p className="text-xs font-bold text-slate-800 dark:text-white">{p.name}</p>
-                        <p className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">{p.unit || 'UNIT'}</p>
+                        <p className="text-[9px] text-slate-400 uppercase">{p.unit || 'UNIT'}</p>
                       </div>
                     )}
                   </div>
-                  
                   {editingProduct?.id !== p.id && (
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        type="button"
-                        onClick={() => {
-                          setEditingProduct(p);
-                          setEditProductName(p.name);
-                          setEditProductUnit(p.unit || '');
-                          setEditProductIsDurable(p.isDurable || false);
-                          setEditProductBoxSize(p.boxSize || 12);
-                        }}
-                        className="p-2 text-blue-500 hover:bg-blue-500/10 rounded-lg"
-                      >
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100">
+                      <button onClick={() => { setEditingProduct(p); setEditProductName(p.name); setEditProductUnit(p.unit || ''); }} className="p-1.5 text-blue-500">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
-                      <button 
-                        type="button"
-                        onClick={() => handleDeleteProduct(p.id)}
-                        className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg"
-                      >
+                      <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 text-red-500">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -1401,79 +1648,34 @@ export default function Suppliers() {
       {/* ================= MERGE DUPLICATES MODAL ================= */}
       {showMergeModal && (
         <div className="fixed inset-0 z-55 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
-              <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase">
-                🔄 ໂຮມສິນຄ້າຊ້ຳຊ້ອນ / Merge Duplicates
-              </h3>
-              <button type="button" onClick={() => setShowMergeModal(false)}>
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
+          <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 space-y-3">
+            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-2">
+              <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">Merge Duplicates</h3>
+              <button type="button" onClick={() => setShowMergeModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
             </div>
-
-            <div className="space-y-4 text-xs">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400">
-                  1. ເລືອກສິນຄ້າເກົ່າ (ທີ່ຈະລົບອອກ)
-                </label>
-                <select
-                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-bold outline-none text-slate-800 dark:text-white"
-                  value={mergeSourceId}
-                  onChange={(e) => setMergeSourceId(e.target.value)}
-                >
-                  <option value="">-- ເລືອກ --</option>
-                  {products.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.unit || 'g'})</option>
-                  ))}
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400">1. Old Item (To Delete)</label>
+                <select className="w-full p-2 rounded-xl border text-xs" value={mergeSourceId} onChange={e => setMergeSourceId(e.target.value)}>
+                  <option value="">-- Select --</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400">
-                  2. ເລືອກສິນຄ້າຫຼັກ (ທີ່ຈະເກັບໄວ້)
-                </label>
-                <select
-                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-bold outline-none text-slate-800 dark:text-white"
-                  value={mergeTargetId}
-                  onChange={(e) => setMergeTargetId(e.target.value)}
-                >
-                  <option value="">-- ເລືອກ --</option>
-                  {products.filter(p => p.id !== mergeSourceId).map(p => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.unit || 'g'})</option>
-                  ))}
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400">2. Target Item (To Keep)</label>
+                <select className="w-full p-2 rounded-xl border text-xs" value={mergeTargetId} onChange={e => setMergeTargetId(e.target.value)}>
+                  <option value="">-- Select --</option>
+                  {products.filter(p => p.id !== mergeSourceId).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400">
-                  3. ປັດໄຈຄູນປ່ຽນຫົວໜ່ວຍ (Multiplier)
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-mono font-bold text-slate-800 dark:text-white"
-                  value={mergeMultiplier}
-                  onChange={(e) => setMergeMultiplier(parseFloat(e.target.value) || 1)}
-                />
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400">Multiplier</label>
+                <input type="number" step="any" className="w-full p-2 rounded-xl border text-xs font-mono" value={mergeMultiplier} onChange={e => setMergeMultiplier(parseFloat(e.target.value) || 1)} />
               </div>
             </div>
-
             <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowMergeModal(false)}
-                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 rounded-xl font-black text-xs uppercase"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isMerging || !mergeSourceId || !mergeTargetId}
-                onClick={handleMergeProducts}
-                className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-xl font-black text-xs uppercase"
-              >
-                {isMerging ? 'Processing...' : 'Merge Now'}
-              </button>
+              <button type="button" onClick={() => setShowMergeModal(false)} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold">Cancel</button>
+              <button type="button" disabled={isMerging || !mergeSourceId || !mergeTargetId} onClick={handleMergeProducts} className="flex-1 py-2 bg-amber-500 text-white rounded-xl text-xs font-bold">Merge</button>
             </div>
           </div>
         </div>
@@ -1482,99 +1684,52 @@ export default function Suppliers() {
       {/* ================= EDIT SINGLE PRICE MODAL ================= */}
       {editingPriceId && editPriceData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
-              <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase flex items-center gap-1.5">
-                <Edit3 className="w-4 h-4 text-blue-500" />
-                <span>Modify Price Entry</span>
-              </h3>
-              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }}>
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
+          <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 space-y-3">
+            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-2">
+              <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">Modify Entry</h3>
+              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }}><X className="w-4 h-4 text-slate-400" /></button>
             </div>
-
-            <div className="space-y-3 text-xs">
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Bill No</label>
-                <input 
-                  type="text"
-                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-mono font-bold text-slate-800 dark:text-white"
-                  value={editPriceData.billNo || ''}
-                  onChange={e => setEditPriceData({...editPriceData, billNo: e.target.value})}
-                />
+            <div className="space-y-2 text-xs">
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400">Bill No</label>
+                <input className="w-full p-2 rounded-xl border text-xs font-mono" value={editPriceData.billNo || ''} onChange={e => setEditPriceData({...editPriceData, billNo: e.target.value})} />
               </div>
-
               <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">Date</label>
-                  <input 
-                    type="date"
-                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-bold text-slate-800 dark:text-white"
-                    value={editPriceData.date || ''}
-                    onChange={e => setEditPriceData({...editPriceData, date: e.target.value})}
-                  />
+                <div>
+                  <label className="text-[9px] font-black uppercase text-slate-400">Category</label>
+                  <select className="w-full p-2 rounded-xl border text-xs" value={editPriceData.category || 'purchasing'} onChange={e => setEditPriceData({...editPriceData, category: e.target.value})}>
+                    <option value="purchasing">Purchasing</option>
+                    <option value="rental">Rental</option>
+                    <option value="salary">Salary</option>
+                    <option value="operation">Operation</option>
+                    <option value="admin">Admin</option>
+                    <option value="sales">Sales</option>
+                    <option value="other">Other</option>
+                  </select>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">Supplier</label>
-                  <input 
-                    type="text"
-                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-bold text-slate-800 dark:text-white"
-                    value={editPriceData.supplier || ''}
-                    onChange={e => setEditPriceData({...editPriceData, supplier: e.target.value})}
-                  />
+                <div>
+                  <label className="text-[9px] font-black uppercase text-slate-400">Paid Via</label>
+                  <select className="w-full p-2 rounded-xl border text-xs" value={editPriceData.paymentMethod || 'Cash'} onChange={e => setEditPriceData({...editPriceData, paymentMethod: e.target.value})}>
+                    <option value="Cash">Cash</option>
+                    <option value="Onepay">Onepay</option>
+                    <option value="LDB">LDB</option>
+                  </select>
                 </div>
               </div>
-
               <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">Original Price</label>
-                  <input 
-                    type="number"
-                    step="any"
-                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-mono font-bold text-slate-800 dark:text-white"
-                    value={editPriceData.priceOriginal || 0}
-                    onChange={e => setEditPriceData({...editPriceData, priceOriginal: parseFloat(e.target.value) || 0})}
-                  />
+                <div>
+                  <label className="text-[9px] font-black uppercase text-slate-400">Price</label>
+                  <input type="number" step="any" className="w-full p-2 rounded-xl border text-xs font-mono" value={editPriceData.priceOriginal || 0} onChange={e => setEditPriceData({...editPriceData, priceOriginal: parseFloat(e.target.value) || 0})} />
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">Quantity</label>
-                  <input 
-                    type="number"
-                    step="any"
-                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-mono font-bold text-slate-800 dark:text-white"
-                    value={editPriceData.quantity || 1}
-                    onChange={e => setEditPriceData({...editPriceData, quantity: parseFloat(e.target.value) || 1})}
-                  />
+                <div>
+                  <label className="text-[9px] font-black uppercase text-slate-400">Quantity</label>
+                  <input type="number" step="any" className="w-full p-2 rounded-xl border text-xs font-mono" value={editPriceData.quantity || 1} onChange={e => setEditPriceData({...editPriceData, quantity: parseFloat(e.target.value) || 1})} />
                 </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Remark</label>
-                <input 
-                  type="text"
-                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#052659] text-xs font-medium text-slate-800 dark:text-white"
-                  value={editPriceData.remark || ''}
-                  onChange={e => setEditPriceData({...editPriceData, remark: e.target.value})}
-                />
               </div>
             </div>
-
             <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => { setEditingPriceId(null); setEditPriceData(null); }}
-                className="flex-1 py-2.5 bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-xl font-black text-xs uppercase"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={saveLoading}
-                onClick={handleUpdatePrice}
-                className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl font-black text-xs uppercase"
-              >
-                {saveLoading ? 'Saving...' : 'Update Record'}
-              </button>
+              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold">Cancel</button>
+              <button type="button" disabled={saveLoading} onClick={handleUpdatePrice} className="flex-1 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold">Update</button>
             </div>
           </div>
         </div>
