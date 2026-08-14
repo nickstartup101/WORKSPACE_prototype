@@ -21,7 +21,6 @@ import {
   Sparkles,
   Store,
   MapPin,
-  Users,
   ChevronLeft,
   ChevronRight,
   CheckCircle
@@ -39,7 +38,6 @@ import Financials from './components/Financials';
 import Settings from './components/Settings';
 import PinModal from './components/PinModal';
 import ProcurementPlanner from './components/ProcurementPlanner';
-import HR from './components/HR';
 
 // Premium Text Logo Component
 const TextLogo = ({ centered = false, dark = false, name = "La Dolce" }: { centered?: boolean, dark?: boolean, name?: string | null }) => (
@@ -113,7 +111,6 @@ export default function App() {
     const verifyBillParam = params.get('verifyBill');
     if (verifyBillParam) {
       try {
-        // Safe base64 decoding with support for UTF-8
         const decoded = decodeURIComponent(escape(atob(verifyBillParam)));
         const parsed = JSON.parse(decoded);
         setScannedBillData(parsed);
@@ -145,7 +142,6 @@ export default function App() {
       if (isDemoLocalRef.current) return;
       setUser(u);
       
-      // Cleanup previous listeners
       if (settingsUnsubscribe) {
         settingsUnsubscribe();
         settingsUnsubscribe = null;
@@ -156,13 +152,11 @@ export default function App() {
       }
 
       if (u) {
-        // Listen to app config
         const configRef = doc(db, 'settings', 'appConfig');
         const configUnsub = onSnapshot(configRef, (snap) => {
           if (snap.exists()) setAppConfig(snap.data());
         });
 
-        // Listen to admin role
         const adminRef = doc(db, 'admins', u.uid);
         adminUnsubscribe = onSnapshot(adminRef, (snap) => {
           if (snap.exists()) {
@@ -172,7 +166,6 @@ export default function App() {
           }
         });
 
-        // Listen to user settings for PIN
         const settingsRef = doc(db, 'users', u.uid, 'settings', 'main');
         settingsUnsubscribe = onSnapshot(settingsRef, (snap) => {
           if (snap.exists()) {
@@ -181,16 +174,13 @@ export default function App() {
             setUserSettings({});
           }
         }, (error) => {
-          // Only handle error if we are still logged in
           if (auth.currentUser) {
             handleFirestoreError(error, OperationType.GET, `users/${u.uid}/settings/main`);
           }
         });
 
-        // Listen for remote approval requests if super admin
         let approvalUnsub: (() => void) | null = null;
         if (FOUNDING_ADMINS.includes(u.email?.toLowerCase() || '')) {
-          // Simplified query to avoid index issues and show all pending regardless of time
           const q = query(
             collection(db, 'approval_requests'),
             where('status', '==', 'pending'),
@@ -234,15 +224,12 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Activity tracking for idle timeout
   useEffect(() => {
     const updateActivity = () => setLastActivity(Date.now());
     
-    // Track various user interactions
     const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
     events.forEach(name => document.addEventListener(name, updateActivity));
 
-    // Check timer every 10 seconds
     const interval = setInterval(() => {
       const now = Date.now();
       const idleTime = now - lastActivity;
@@ -278,6 +265,7 @@ export default function App() {
       }
     }
   };
+
   const startLocalDemoMode = () => {
     setIsDemoLocal(true);
     setUser({
@@ -344,12 +332,10 @@ export default function App() {
   if (!user) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#052659] p-4 text-center relative overflow-hidden">
-        {/* Background decorative elements */}
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-400/20 rounded-full blur-[120px] animate-pulse"></div>
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-600/20 rounded-full blur-[120px] animate-pulse"></div>
         
         <div className="glass-card max-w-lg w-full space-y-12 animate-in fade-in zoom-in duration-1000 py-20 px-10 border-slate-200 dark:border-white/5 shadow-2xl relative overflow-hidden">
-          {/* Subtle geometric accent */}
           <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full -mr-16 -mt-16 blur-3xl"></div>
           
           <TextLogo centered={true} name={appConfig?.shopName || userSettings?.shopName} />
@@ -428,10 +414,10 @@ export default function App() {
     );
   }
 
+  // ✅ Navigation Items without HR
   const navItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
     { id: 'suppliers', icon: Truck, label: t('suppliers') },
-    { id: 'hr', icon: Users, label: i18n.language === 'la' ? 'ຄຸ້ມຄອງບຸກຄະລາກອນ (HR)' : 'Staffing / HR' },
     { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
     { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
     { id: 'settings', icon: SettingsIcon, label: t('settings') },
@@ -539,7 +525,6 @@ export default function App() {
           </div>
           
           <div className={`flex ${isSidebarCollapsed ? 'flex-col items-center' : 'items-center'} gap-2`}>
-            {/* Collapse toggle */}
             <button
               onClick={toggleSidebarCollapse}
               className="hidden lg:flex items-center justify-center p-2 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all"
@@ -567,7 +552,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Desktop sidebar spacer to prevent fixed sidebar from overlapping content */}
+      {/* Desktop sidebar spacer */}
       <div className={`hidden lg:block transition-all duration-300 shrink-0 ${isSidebarCollapsed ? 'w-20' : 'w-60'}`} />
 
       {/* Main Content */}
@@ -669,7 +654,6 @@ export default function App() {
            <div className="max-w-7xl mx-auto space-y-6">
              {activeTab === 'dashboard' && <Dashboard userSettings={userSettings} user={user} selectedBranch={selectedBranch} />}
              {activeTab === 'suppliers' && <Suppliers />}
-             {activeTab === 'hr' && <HR selectedBranch={selectedBranch} userSettings={userSettings} />}
              {activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
              {activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
              {activeTab === 'settings' && <Settings user={user} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} userSettings={userSettings} isSuperAdmin={isSuperAdmin} appConfig={appConfig} selectedBranch={selectedBranch} />}
@@ -686,11 +670,9 @@ export default function App() {
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
                 className="bg-white dark:bg-slate-900 text-slate-850 dark:text-white border border-slate-100 dark:border-white/10 rounded-[2.5rem] p-6 md:p-8 max-w-md w-full shadow-2xl relative overflow-hidden"
               >
-                {/* Decorative secure grid pattern */}
                 <div className="absolute top-0 left-0 w-full h-32 bg-emerald-500/10 dark:bg-emerald-500/5 -z-10 blur-xl"></div>
                 
                 <div className="flex flex-col items-center text-center space-y-4">
-                  {/* Verified Icon Badge */}
                   <div className="w-16 h-16 bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center shadow-lg relative border border-emerald-500/20">
                     <CheckCircle className="w-9 h-9" />
                     <span className="absolute -top-1 -right-1 flex h-3 w-3">
@@ -770,7 +752,6 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        // Clear param from URL without page refresh
                         const newUrl = window.location.origin + window.location.pathname;
                         window.history.replaceState({}, document.title, newUrl);
                         setScannedBillData(null);
@@ -837,7 +818,6 @@ export default function App() {
                       try {
                         const ref = doc(db, 'approval_requests', activeApprovalRequest.id);
                         
-                        // Execute the action directly if it's a simple one (like delete)
                         if (activeApprovalRequest.type === 'delete' && activeApprovalRequest.data?.id) {
                           try {
                             await deleteDoc(doc(db, 'supplierPrices', activeApprovalRequest.data.id));
