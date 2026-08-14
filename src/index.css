@@ -1,0 +1,373 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Lao:wght@100..900&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Outfit:wght@100..900&family=Alice&display=swap');
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Outfit", "Noto Sans Lao", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", serif;
+  --font-alice: "Alice", serif;
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-accent: #3b82f6;
+  --color-sidebar: #052659;
+  --color-card-bg: white;
+  --color-card-border: #f1f5f9;
+}
+
+:root {
+  --primary: #052659;
+  --secondary: #0a1e3b;
+}
+
+.dark {
+  --primary: #93c5fd; /* Soft blue for text visibility */
+  --secondary: #60a5fa;
+}
+
+@layer base {
+  body {
+    @apply bg-[#f8fafc] text-slate-800 font-sans antialiased transition-colors duration-300;
+    font-family: "Noto Sans Lao", "Inter", sans-serif;
+    min-height: 100vh;
+    touch-action: manipulation;
+  }
+
+  a, button, select, input, textarea, [role="button"], .cursor-pointer {
+    touch-action: manipulation;
+  }
+
+  html.dark body {
+    @apply bg-[#052659] text-slate-50;
+    background-color: #052659;
+    background-image: none;
+  }
+}
+
+.high-density-card {
+  @apply bg-white dark:bg-[#073069]/90 border border-slate-200 dark:border-white/10 rounded-xl shadow-sm p-4 transition-all duration-300 backdrop-blur-md;
+}
+
+.high-density-card:hover {
+  @apply shadow-lg border-slate-300 dark:border-white/20 -translate-y-0.5;
+}
+
+.glass-card {
+  @apply bg-white dark:bg-[#073069]/95 backdrop-blur-2xl border border-slate-200 dark:border-white/10 rounded-3xl shadow-2xl transition-all duration-500;
+}
+
+.crystal-button {
+  @apply relative overflow-hidden bg-[#052659] dark:bg-white/10 text-white font-bold uppercase tracking-wider text-[10px] py-4 px-8 rounded-2xl transition-all duration-150 hover:scale-[1.01] active:scale-[0.98] active:opacity-90 shadow-[0_20px_40px_-12px_rgba(5,38,89,0.3)] dark:shadow-none;
+}
+
+.crystal-button::after {
+  content: "";
+  @apply absolute inset-0 bg-white/20 scale-x-0 origin-left transition-transform duration-700;
+}
+
+.crystal-button:hover::after {
+  @apply scale-x-100;
+}
+
+.crystal-input {
+  @apply w-full p-4 text-sm font-bold rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white outline-none focus:ring-4 focus:ring-primary/10 dark:focus:ring-white/5 transition-all;
+}
+
+.label-xs {
+  @apply text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-blue-200/50 leading-none;
+}
+
+.stat-value {
+  @apply text-2xl font-bold tracking-tight text-[#052659] dark:text-white;
+}
+
+.mask-fade-vertical {
+  mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+}
+
+@keyframes marquee-vertical {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-50%);
+  }
+}
+
+.animate-marquee-vertical {
+  animation: marquee-vertical 150s linear infinite;
+}
+
+.animate-marquee-vertical:hover,
+.high-density-card:hover .animate-marquee-vertical {
+  animation-play-state: paused;
+}
+
+@keyframes health-scroll {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-33.333%);
+  }
+}
+
+.animate-health-scroll {
+  animation: health-scroll 200s linear infinite;
+}
+
+.animate-health-scroll:hover,
+.high-density-card:hover .animate-health-scroll {
+  animation-play-state: paused;
+}
+
+/* 🖨️ ULTRA-SHARP THERMAL PRINT OPTIMIZATION FOR PROCUREMENT RECIPES/BILLS */
+@media print {
+  /* Hide every page element by default to prevent overlapping dashboard elements */
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  
+  /* Hide typical menu elements but KEEP root and main visible */
+  nav, header, aside, .modal, button, .no-print, .no-print * {
+    display: none !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    visibility: hidden !important;
+  }
+
+  /* Retain root and main displays so that the nested receipt section is NOT hidden */
+  #root, main {
+    display: block !important;
+    visibility: visible !important;
+    background: #ffffff !important;
+  }
+
+  /* Isolate and fully expose ONLY the print receipt container */
+  #print-receipt-section, #print-receipt-section * {
+    display: block !important;
+    visibility: visible !important;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  #print-receipt-section {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 80mm !important; /* Perfect standard width for professional ESC/POS thermal layout */
+    margin: 0 auto !important;
+    padding: 10px !important;
+    border: none !important;
+    box-shadow: none !important;
+    page-break-after: avoid !important;
+    font-family: 'Courier New', Courier, monospace !important;
+    image-rendering: pixelated !important;
+  }
+
+  /* Force maximum typography thickness and pitch-black coloring for thermal heads burns */
+  #print-receipt-section p, 
+  #print-receipt-section span, 
+  #print-receipt-section div, 
+  #print-receipt-section h2, 
+  #print-receipt-section h3 {
+    color: #000000 !important;
+    font-weight: 900 !important; /* Ultra bold for extra clarity / sharpness */
+    letter-spacing: -0.01em !important;
+    -webkit-text-fill-color: #000000 !important;
+    text-shadow: none !important;
+  }
+
+  #print-receipt-section h2 {
+    font-size: 16px !important;
+    margin-bottom: 4px !important;
+    text-transform: uppercase !important;
+  }
+
+  /* Force solid black lines for dividers (avoid light grey or styled borders which print faint) */
+  #print-receipt-section .border-dashed,
+  #print-receipt-section .border-dotted,
+  #print-receipt-section .border-b,
+  #print-receipt-section .border-t {
+    border-color: #000000 !important;
+    border-width: 1.5px !important;
+    opacity: 1 !important;
+  }
+
+  /* Make sure generated barcodes print in pure high-contrast black on paper */
+  #print-receipt-section .bg-black {
+    background-color: #000000 !important;
+    border: 1px solid #000000 !important;
+    height: 28px !important;
+    opacity: 1 !important;
+  }
+
+  /* 📊 HIGH-END LA DOLCE BUSINESS PAYROLL LEDGER PRINT STYLING */
+  body.printing-payroll-ledger {
+    background: #ffffff !important;
+    color: #1a1513 !important;
+    font-family: "Noto Sans Lao", "Inter", "Outfit", sans-serif !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body.printing-payroll-ledger #payroll-print-invoice-ledger {
+    display: block !important;
+    visibility: visible !important;
+    color: #1a1513 !important;
+    background: #ffffff !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 15px !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
+  body.printing-payroll-ledger #payroll-print-invoice-ledger * {
+    visibility: visible !important;
+    color: #1a1513 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Force modals and covers to fit perfectly as flat printable sheet pages */
+  body.printing-payroll-ledger .fixed.inset-0 {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    z-index: auto !important;
+  }
+
+  body.printing-payroll-ledger .fixed.inset-0 > div {
+    display: block !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Ensure grid systems do not collapse into single vertical blocks on print media */
+  body.printing-payroll-ledger .grid {
+    display: grid !important;
+  }
+  body.printing-payroll-ledger .flex {
+    display: flex !important;
+  }
+  body.printing-payroll-ledger .flex-row {
+    flex-direction: row !important;
+  }
+  body.printing-payroll-ledger .justify-between {
+    justify-content: space-between !important;
+  }
+  body.printing-payroll-ledger .items-center {
+    align-items: center !important;
+  }
+  
+  body.printing-payroll-ledger .grid-cols-1 {
+    grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+  }
+  body.printing-payroll-ledger .grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  body.printing-payroll-ledger .grid-cols-4,
+  body.printing-payroll-ledger .md\:grid-cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+  body.printing-payroll-ledger .md\:grid-cols-12 {
+    grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+  }
+  body.printing-payroll-ledger .md\:col-span-5 {
+    grid-column: span 5 / span 5 !important;
+  }
+  body.printing-payroll-ledger .md\:col-span-7 {
+    grid-column: span 7 / span 7 !important;
+  }
+
+  /* Ensure elegant classic luxury table line visibility on black & white or color laser jets */
+  body.printing-payroll-ledger table {
+    border: 2px solid #1a1513 !important;
+    border-collapse: collapse !important;
+    width: 100% !important;
+    display: table !important;
+  }
+
+  body.printing-payroll-ledger thead {
+    display: table-header-group !important;
+  }
+
+  body.printing-payroll-ledger tbody {
+    display: table-row-group !important;
+  }
+
+  body.printing-payroll-ledger tr {
+    display: table-row !important;
+    page-break-inside: avoid !important;
+  }
+
+  body.printing-payroll-ledger th {
+    background-color: #f5f4f0 !important;
+    color: #1a1513 !important;
+    border: 1.5px solid #1a1513 !important;
+    font-weight: 800 !important;
+    padding: 8px 4px !important;
+    display: table-cell !important;
+    text-align: center !important;
+  }
+
+  body.printing-payroll-ledger td {
+    border: 1px solid #c5c3be !important;
+    color: #1a1513 !important;
+    padding: 6px 6px !important;
+    display: table-cell !important;
+    background: transparent !important;
+  }
+
+  body.printing-payroll-ledger .text-red-500,
+  body.printing-payroll-ledger .text-rose-500 {
+    color: #b91c1c !important;
+    -webkit-text-fill-color: #b91c1c !important;
+    font-weight: 700 !important;
+  }
+
+  body.printing-payroll-ledger .text-green-500 {
+    color: #15803d !important;
+    -webkit-text-fill-color: #15803d !important;
+    font-weight: 700 !important;
+  }
+
+  body.printing-payroll-ledger .text-blue-500,
+  body.printing-payroll-ledger .text-blue-600 {
+    color: #1d4ed8 !important;
+    -webkit-text-fill-color: #1d4ed8 !important;
+    font-weight: bold !important;
+  }
+
+  /* Explicitly ignore receipt printer formatting during ledger mode */
+  body.printing-payroll-ledger #print-receipt-section {
+    display: none !important;
+    height: 0 !important;
+    visibility: hidden !important;
+  }
+}
+
+
