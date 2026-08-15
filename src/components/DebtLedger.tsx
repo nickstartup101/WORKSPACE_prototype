@@ -5,21 +5,20 @@ import {
   deleteDoc, doc, updateDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { 
-  Plus, Trash2, Edit3, Save, X, Search, Download, 
+  Plus, Trash2, X, Search, Download, 
   Receipt, Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
-  Building2, TrendingUp, DollarSign, Calendar, Filter,
-  ArrowUpRight, ArrowDownRight, Tag, AlertCircle, CheckCircle2,
-  Clock, FileText, ArrowRightLeft, UserCheck, ShieldAlert, Check
+  Building2, ArrowUpRight, ArrowDownRight, CheckCircle2,
+  Check, Archive, FileText
 } from 'lucide-react';
 import { format, isPast, parseISO } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { useTranslation } from 'react-i18next';
 
-export type DebtType = 'payable' | 'receivable'; // payable = ໜີ້ຕ້ອງສົ່ງ (Pending Expense), receivable = ໜີ້ຕ້ອງຮັບ (Pending Income)
+export type DebtType = 'payable' | 'receivable'; 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
 export default function DebtLedger({ selectedBranch }: { selectedBranch?: string }) {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [debts, setDebts] = useState<any[]>([]);
@@ -28,26 +27,26 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
   const [searchQuery, setSearchQuery] = useState('');
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
-  // Settlement Modal (Modal ຊຳລະໜີ້ / ຮັບເງິນໜີ້)
+  // Settlement Modal State
   const [settlingDebt, setSettlingDebt] = useState<any | null>(null);
   const [settleChannel, setSettleChannel] = useState<PaymentChannel>('Onepay');
   const [settleDate, setSettleDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
   const [settlingLoading, setSettlingLoading] = useState(false);
 
-  // Form State for New Debt
+  // Form State
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
 
   const [formData, setFormData] = useState({
     type: 'payable' as DebtType,
-    partyName: '', // ຊື່ເຈົ້າໜີ້ ຫຼື ລູກໜີ້
+    partyName: '',
     partyPhone: '',
     invoiceNo: '',
     amount: 0,
     category: 'Purchasing',
     issueDate: format(new Date(), 'yyyy-MM-dd'),
-    dueDate: format(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'), // 7 days default
+    dueDate: format(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'),
     remark: '',
     invoiceBase64: ''
   });
@@ -83,7 +82,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     return () => window.removeEventListener('paste', handlePaste);
   }, []);
 
-  // Listen to Firestore Debts Collection
+  // Listen to Firestore Debts
   useEffect(() => {
     const branch = selectedBranch || 'branch_1';
     const qDebts = query(collection(db, 'debts'), orderBy('dueDate', 'asc'));
@@ -100,7 +99,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     return () => unsubscribe();
   }, [selectedBranch]);
 
-  // Image compression to Base64
   const compressAndSetImage = (base64Str: string) => {
     const img = new Image();
     img.src = base64Str;
@@ -127,37 +125,28 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     reader.readAsDataURL(file);
   };
 
-  // Summary Metrics
   const summary = useMemo(() => {
-    let totalPendingPayable = 0; // ໜີ້ຕ້ອງສົ່ງທີ່ຄ້າງຈ່າຍ
-    let totalPendingReceivable = 0; // ໜີ້ຕ້ອງຮັບທີ່ຄ້າງຮັບ
-    let settledPayableCount = 0;
-    let settledReceivableCount = 0;
+    let totalPendingPayable = 0;
+    let totalPendingReceivable = 0;
 
     debts.forEach(d => {
       const amt = Number(d.amount) || 0;
       if (d.status === 'pending') {
         if (d.type === 'payable') totalPendingPayable += amt;
         else totalPendingReceivable += amt;
-      } else {
-        if (d.type === 'payable') settledPayableCount++;
-        else settledReceivableCount++;
       }
     });
 
     return {
       totalPendingPayable,
-      totalPendingReceivable,
-      settledPayableCount,
-      settledReceivableCount
+      totalPendingReceivable
     };
   }, [debts]);
 
-  // Save or Update Debt Record
   const handleSaveDebt = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.partyName.trim() || formData.amount <= 0) {
-      alert(i18n.language === 'la' ? 'ກະລຸນາໃສ່ຊື່ ແລະ ຈຳນວນເງິນໃຫ້ຖືກຕ້ອງ' : 'Please provide party name and a valid amount');
+      alert(i18n.language === 'la' ? 'ກະລຸນາໃສ່ຊື່ ແລະ ຈຳນວນເງິນໃຫ້ຖືກຕ້ອງ' : 'Please fill all required fields');
       return;
     }
 
@@ -176,13 +165,11 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
 
       if (editingDebtId) {
         await updateDoc(doc(db, 'debts', editingDebtId), debtData);
-        alert(i18n.language === 'la' ? 'ແກ້ໄຂຂໍ້ມູນໜີ້ສຳເລັດ!' : 'Debt updated successfully!');
       } else {
         await addDoc(collection(db, 'debts'), {
           ...debtData,
           createdAt: serverTimestamp()
         });
-        alert(i18n.language === 'la' ? 'ບັນທຶກໜີ້ໃໝ່ສຳເລັດ!' : 'New debt logged successfully!');
       }
 
       setShowAddForm(false);
@@ -201,38 +188,35 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
       });
       setDisplayAmount('');
     } catch (err: any) {
-      console.error("Debt save error:", err);
       alert(`Error: ${err.message}`);
     } finally {
       setSaveLoading(false);
     }
   };
 
-  // 🌟 ONE-CLICK SETTLEMENT: MARK AS SETTLED & PUSH TO FINANCE (ລາຍຮັບ/ລາຍຈ່າຍ)
-  const handleExecuteSettlement = async () => {
+  // 🌟 ແບບທີ 1: ຊຳລະ & SYNC ເຂົ້າ FINANCE (ລາຍຮັບ/ລາຍຈ່າຍ)
+  const handleExecuteSettlementWithFinance = async () => {
     if (!settlingDebt) return;
     try {
       setSettlingLoading(true);
       const branchId = selectedBranch || 'branch_1';
       const timeNow = format(new Date(), 'HH:mm');
 
-      // 1. Determine if this should be an Expense (Payable) or Income (Receivable)
       const isPayable = settlingDebt.type === 'payable';
       const txType = isPayable ? 'expense' : 'income';
       const defaultCategory = isPayable ? (settlingDebt.category || 'Purchasing') : 'Sales';
       
       const description = isPayable 
-        ? `ຊຳລະໜີ້ໃຫ້ເຈົ້າໜີ້: ${settlingDebt.partyName} ${settlingDebt.invoiceNo ? `(#${settlingDebt.invoiceNo})` : ''}`
-        : `ໄດ້ຮັບຊຳລະໜີ້ຈາກລູກໜີ້: ${settlingDebt.partyName} ${settlingDebt.invoiceNo ? `(#${settlingDebt.invoiceNo})` : ''}`;
+        ? `ຊຳລະໜີ້ໃຫ້: ${settlingDebt.partyName} ${settlingDebt.invoiceNo ? `(#${settlingDebt.invoiceNo})` : ''}`
+        : `ຮັບຊຳລະໜີ້ຈາກ: ${settlingDebt.partyName} ${settlingDebt.invoiceNo ? `(#${settlingDebt.invoiceNo})` : ''}`;
 
-      // 2. Add to Transactions Collection (Finance will immediately recognize this!)
       const txRef = await addDoc(collection(db, 'transactions'), {
         type: txType,
         amount: Number(settlingDebt.amount) || 0,
         category: defaultCategory,
         description,
         source: settleChannel,
-        receiptUrl: settlingDebt.invoiceBase64 || '', // 👈 ແນບຮູບ Invoice Base64 ໄປພ້ອມເລີຍ!
+        receiptUrl: settlingDebt.invoiceBase64 || '',
         date: settleDate,
         time: timeNow,
         debtId: settlingDebt.id,
@@ -245,31 +229,49 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         branchId
       });
 
-      // 3. Mark Debt as Settled in Debts Collection
       await updateDoc(doc(db, 'debts', settlingDebt.id), {
         status: 'settled',
+        settledMode: 'finance_synced',
         settledDate: settleDate,
         settledChannel: settleChannel,
         settledTxId: txRef.id,
         updatedAt: serverTimestamp()
       });
 
-      alert(i18n.language === 'la' 
-        ? `ຊຳລະໜີ້ສຳເລັດ! ດຶງເຂົ້າເປັນ ${isPayable ? 'ລາຍຈ່າຍ (Expense)' : 'ລາຍຮັບ (Income)'} ໃນ Finance ຮຽບຮ້ອຍແລ້ວ!` 
-        : `Settlement complete! Synchronized directly into Financials as an ${isPayable ? 'Expense' : 'Income'}!`);
-
+      alert(i18n.language === 'la' ? 'ຊຳລະໜີ້ ແລະ ດຶງເຂົ້າ Finance ສຳເລັດ!' : 'Settled and synced to Finance!');
       setSettlingDebt(null);
     } catch (err: any) {
-      console.error("Settlement Error:", err);
       alert(`Error: ${err.message}`);
     } finally {
       setSettlingLoading(false);
     }
   };
 
-  // Delete Debt Record
+  // 🌟 ແບບທີ 2: ARCHIVE / ປິດໜີ້ເທົ່ານັ້ນ (ບໍ່ດຶງເຂົ້າ FINANCE - ສຳລັບ REMINDER INVOICE / ຢືມເງິນພາຍໃນ)
+  const handleArchiveWithoutFinance = async () => {
+    if (!settlingDebt) return;
+    try {
+      setSettlingLoading(true);
+
+      await updateDoc(doc(db, 'debts', settlingDebt.id), {
+        status: 'settled',
+        settledMode: 'archive_only',
+        settledDate: settleDate,
+        settledChannel: 'Internal / Reminder',
+        updatedAt: serverTimestamp()
+      });
+
+      alert(i18n.language === 'la' ? 'ປິດໜີ້ / Archive ສຳເລັດແລ້ວ! (ບໍ່ໄດ້ກະທົບຍອດ Finance)' : 'Archived as Reminder Only (Finance untouched)!');
+      setSettlingDebt(null);
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setSettlingLoading(false);
+    }
+  };
+
   const handleDeleteDebt = async (id: string) => {
-    if (!confirm(i18n.language === 'la' ? 'ທ່ານແນ່ໃຈບໍ່ທີ່ຈະລົບລາຍການໜີ້ນີ້?' : 'Delete this debt record?')) return;
+    if (!confirm(i18n.language === 'la' ? 'ທ່ານແນ່ໃຈບໍ່ທີ່ຈະລົບໜີ້ນີ້?' : 'Delete this debt record?')) return;
     try {
       await deleteDoc(doc(db, 'debts', id));
     } catch (err: any) {
@@ -277,7 +279,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     }
   };
 
-  // Export Excel
   const handleExportExcel = () => {
     const headers = ['Type', 'Party Name', 'Phone', 'Invoice No', 'Amount (LAK)', 'Status', 'Issue Date', 'Due Date', 'Category', 'Remark'];
     const rows = debts.map(d => [
@@ -302,7 +303,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
   return (
     <div className="space-y-6">
 
-      {/* ================= 1. HEADER & TOP ACTIONS ================= */}
+      {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
@@ -318,7 +319,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-bold mt-0.5">
-              {i18n.language === 'la' ? 'ຄຸ້ມຄອງໜີ້ສິນ • ແນບໃບ Invoice • ດຶງເຂົ້າລາຍຮັບ-ລາຍຈ່າຍອັດຕະໂນມັດ' : 'Manage Creditor & Debtor Accounts with Invoice Attachment'}
+              {i18n.language === 'la' ? 'ຄຸ້ມຄອງໜີ້ສິນ • Reminder Invoices • ດຶງເຂົ້າ Finance ຫຼື Archive ໄດ້' : 'Manage Creditor & Debtor Accounts'}
             </p>
           </div>
         </div>
@@ -347,15 +348,13 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         </div>
       </div>
 
-      {/* ================= 2. SUMMARY BENTO CARDS ================= */}
+      {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        
-        {/* 🔴 ACCOUNTS PAYABLE (ໜີ້ຕ້ອງສົ່ງ / ເຈົ້າໜີ້) */}
         <div className="bg-gradient-to-br from-rose-500/10 via-rose-500/5 to-transparent p-6 rounded-[2rem] border border-rose-500/20 shadow-sm space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-xs font-black uppercase text-rose-600 dark:text-rose-400 flex items-center gap-2">
               <ArrowDownRight className="w-4 h-4" />
-              <span>{i18n.language === 'la' ? 'ໜີ້ຕ້ອງສົ່ງທັງໝົດ (Pending Expenses / AP)' : 'Accounts Payable (We Owe)'}</span>
+              <span>{i18n.language === 'la' ? 'ໜີ້ຕ້ອງສົ່ງທັງໝົດ (Pending Expenses / AP)' : 'Accounts Payable'}</span>
             </span>
             <span className="px-2.5 py-0.5 bg-rose-500 text-white text-[9px] font-black uppercase rounded-full">
               {i18n.language === 'la' ? 'ຄ້າງຈ່າຍ' : 'Pending Pay'}
@@ -365,18 +364,13 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
           <h3 className="text-3xl font-black font-mono text-rose-600 dark:text-rose-400">
             {Math.round(summary.totalPendingPayable).toLocaleString()} <span className="text-lg font-sans font-bold">₭</span>
           </h3>
-
-          <p className="text-[10px] text-slate-500 dark:text-slate-400">
-            {i18n.language === 'la' ? 'ເມື່ອກົດຊຳລະ ຍອດຈະຖືກດຶງເຂົ້າເປັນ "ລາຍຈ່າຍ" ໃນ Finance ທັນທີ' : 'Settling will push this as an Expense into Financials'}
-          </p>
         </div>
 
-        {/* 🟢 ACCOUNTS RECEIVABLE (ໜີ້ຕ້ອງຮັບ / ລູກໜີ້) */}
         <div className="bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-transparent p-6 rounded-[2rem] border border-emerald-500/20 shadow-sm space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-xs font-black uppercase text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
               <ArrowUpRight className="w-4 h-4" />
-              <span>{i18n.language === 'la' ? 'ໜີ້ຕ້ອງຮັບທັງໝົດ (Pending Incomes / AR)' : 'Accounts Receivable (Owed to Us)'}</span>
+              <span>{i18n.language === 'la' ? 'ໜີ້ຕ້ອງຮັບທັງໝົດ (Pending Incomes / AR)' : 'Accounts Receivable'}</span>
             </span>
             <span className="px-2.5 py-0.5 bg-emerald-500 text-white text-[9px] font-black uppercase rounded-full">
               {i18n.language === 'la' ? 'ຄ້າງຮັບ' : 'Pending Receive'}
@@ -386,15 +380,10 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
           <h3 className="text-3xl font-black font-mono text-emerald-600 dark:text-emerald-400">
             {Math.round(summary.totalPendingReceivable).toLocaleString()} <span className="text-lg font-sans font-bold">₭</span>
           </h3>
-
-          <p className="text-[10px] text-slate-500 dark:text-slate-400">
-            {i18n.language === 'la' ? 'ເມື່ອກົດຮັບເງິນ ຍອດຈະຖືກດຶງເຂົ້າເປັນ "ລາຍຮັບ" ໃນ Finance ທັນທີ' : 'Receiving will push this as Income into Financials'}
-          </p>
         </div>
-
       </div>
 
-      {/* ================= 3. FILTER TABS & SEARCH ================= */}
+      {/* Filter Tabs */}
       <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
         <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10 w-full sm:w-auto">
           <button
@@ -438,7 +427,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         </div>
       </div>
 
-      {/* ================= 4. DEBT CARDS GRID ================= */}
+      {/* Debt Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {debts
           .filter(d => {
@@ -480,7 +469,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                     )}
                   </div>
 
-                  {/* Status Badge */}
                   <span className={`px-2.5 py-1 rounded-xl text-[9px] font-black uppercase ${
                     isSettled 
                       ? 'bg-emerald-500 text-white' 
@@ -488,7 +476,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                         ? 'bg-red-500 text-white animate-pulse' 
                         : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
                   }`}>
-                    {isSettled ? '✓ ສຳເລັດແລ້ວ' : isOverdue ? '⚠️ ກາຍກຳນົດ' : '⏳ ຄ້າງຊຳລະ'}
+                    {isSettled ? (debt.settledMode === 'archive_only' ? '📁 Archived' : '✓ ສຳເລັດ') : isOverdue ? '⚠️ ກາຍກຳນົດ' : '⏳ ຄ້າງຊຳລະ'}
                   </span>
                 </div>
 
@@ -553,8 +541,8 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                       <span>{isPayable ? 'ຊຳລະໜີ້ (Pay)' : 'ຮັບເງິນໜີ້ (Receive)'}</span>
                     </button>
                   ) : (
-                    <div className="flex-1 py-2 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-[10px] font-black text-center uppercase">
-                      ✓ Sync ເຂົ້າ Finance ແລ້ວ ({debt.settledChannel})
+                    <div className="flex-1 py-2 bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 rounded-xl text-[10px] font-black text-center uppercase">
+                      {debt.settledMode === 'archive_only' ? '📁 ປິດໜີ້ເທົ່ານັ້ນ (Reminder)' : `✓ Sync Finance (${debt.settledChannel})`}
                     </div>
                   )}
 
@@ -572,7 +560,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
           })}
       </div>
 
-      {/* ================= 5. MODAL: LOG NEW DEBT ================= */}
+      {/* Modal: New Debt */}
       {showAddForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-lg rounded-[2.5rem] p-6 sm:p-8 shadow-2xl border border-white/10 space-y-5 max-h-[90vh] overflow-y-auto">
@@ -580,7 +568,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h3 className="text-sm font-black uppercase text-slate-900 dark:text-white flex items-center gap-2">
                 <Receipt className="w-4 h-4 text-emerald-500" />
-                <span>{editingDebtId ? 'ແກ້ໄຂໜີ້' : 'ບັນທຶກໜີ້ໃໝ່ (New Debt Record)'}</span>
+                <span>{editingDebtId ? 'ແກ້ໄຂໜີ້' : 'ບັນທຶກໜີ້ໃໝ່ (New Debt / IOU)'}</span>
               </h3>
               <button type="button" onClick={() => setShowAddForm(false)}>
                 <X className="w-5 h-5 text-slate-400" />
@@ -588,8 +576,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
             </div>
 
             <form onSubmit={handleSaveDebt} className="space-y-4">
-              
-              {/* Type Switcher: Payable vs Receivable */}
               <div className="space-y-1">
                 <label className="text-[9.5px] font-black uppercase text-slate-400">ປະເພດໜີ້ (Debt Type)</label>
                 <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
@@ -609,21 +595,20 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                       formData.type === 'receivable' ? 'bg-emerald-500 text-white shadow-md' : 'text-slate-500'
                     }`}
                   >
-                    🟢 ໜີ້ຕ້ອງຮັບ (AR - Owed to Us)
+                    🟢 ໜີ້ຕ້ອງຮັບ / ຢືມເງິນ (AR)
                   </button>
                 </div>
               </div>
 
-              {/* Party Name & Phone */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">
-                    {formData.type === 'payable' ? 'ຊື່ເຈົ້າໜີ້ / ຮ້ານຄ້າ' : 'ຊື່ລູກໜີ້ / ລູກຄ້າ'}
+                    {formData.type === 'payable' ? 'ຊື່ເຈົ້າໜີ້ / ຮ້ານຄ້າ' : 'ຊື່ລູກໜີ້ / ຜູ້ຢືມ'}
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. ຮ້ານ Latda, ທ້າວ ສົມພອນ..."
+                    placeholder="e.g. ຮ້ານ Latda, ພະນັກງານ A..."
                     className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
                     value={formData.partyName}
                     onChange={e => setFormData({ ...formData, partyName: e.target.value })}
@@ -642,10 +627,9 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
-              {/* Amount & Invoice No */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">ຈຳນວນເງິນໜີ້ (Amount ₭)</label>
+                  <label className="text-[9.5px] font-black uppercase text-slate-400">ຈຳນວນເງິນ (Amount ₭)</label>
                   <input
                     type="text"
                     required
@@ -674,10 +658,9 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
-              {/* Dates */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">ວັນທີອອກບິນ (Issue Date)</label>
+                  <label className="text-[9.5px] font-black uppercase text-slate-400">ວັນທີອອກບິນ</label>
                   <input
                     type="date"
                     required
@@ -699,24 +682,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
-              {/* Category */}
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">ໝວດໝູ່ (Category)</label>
-                <select
-                  className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
-                  value={formData.category}
-                  onChange={e => setFormData({ ...formData, category: e.target.value })}
-                >
-                  <option value="Purchasing">🛒 Purchasing (ຊື້ວັດຖຸດິບ)</option>
-                  <option value="Sales">📈 Sales (ຍອດຂາຍ)</option>
-                  <option value="rental">🏠 Rental (ຄ່າເຊົ່າ)</option>
-                  <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
-                  <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
-                  <option value="other">📦 Other (ອື່ນໆ)</option>
-                </select>
-              </div>
-
-              {/* Invoice Image Attachment */}
               <div className="space-y-2 p-3 bg-slate-50 dark:bg-black/20 rounded-2xl border border-dashed border-slate-300 dark:border-white/10">
                 <div className="flex justify-between items-center">
                   <span className="text-[9.5px] font-black uppercase text-slate-500 flex items-center gap-1">
@@ -727,7 +692,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                     <button
                       type="button"
                       onClick={() => setFormData({ ...formData, invoiceBase64: '' })}
-                      className="text-[9px] font-black text-red-500 hover:underline uppercase"
+                      className="text-[9px] font-black text-red-500 uppercase"
                     >
                       Remove
                     </button>
@@ -753,22 +718,10 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                       className="w-full py-3 rounded-xl border border-dashed border-slate-300 dark:border-white/10 flex items-center justify-center gap-2 text-xs font-bold text-slate-500 cursor-pointer hover:bg-slate-100"
                     >
                       <Upload className="w-4 h-4 text-emerald-500" />
-                      <span>ອັບໂຫຼດຮູບໃບ Invoice ຫຼື ກັອບປີ້ວາງ (Ctrl+V)</span>
+                      <span>ອັບໂຫຼດຮູບ ຫຼື ກັອບປີ້ວາງ (Ctrl+V)</span>
                     </label>
                   </div>
                 )}
-              </div>
-
-              {/* Memo */}
-              <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">ໝາຍເຫດ (Memo)</label>
-                <input
-                  type="text"
-                  placeholder="ໝາຍເຫດເພີ່ມເຕີມ..."
-                  className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-slate-800 dark:text-white"
-                  value={formData.remark}
-                  onChange={e => setFormData({ ...formData, remark: e.target.value })}
-                />
               </div>
 
               <button
@@ -783,7 +736,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         </div>
       )}
 
-      {/* ================= 6. MODAL: SETTLE DEBT & PUSH TO FINANCE ================= */}
+      {/* 🌟 MODAL: 2 OPTIONS SETTLEMENT (SYNC TO FINANCE OR ARCHIVE AS REMINDER) */}
       {settlingDebt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-[2.5rem] p-6 sm:p-8 shadow-2xl border border-white/10 space-y-5">
@@ -792,7 +745,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
               <h3 className="text-sm font-black uppercase text-slate-900 dark:text-white flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 <span>
-                  {settlingDebt.type === 'payable' ? 'ຊຳລະໜີ້ & ດຶງເຂົ້າລາຍຈ່າຍ' : 'ຮັບເງິນໜີ້ & ດຶງເຂົ້າລາຍຮັບ'}
+                  {settlingDebt.type === 'payable' ? 'ປິດໜີ້ຕ້ອງສົ່ງ (Payable)' : 'ປິດໜີ້ຕ້ອງຮັບ / ຢືມເງິນ (Receivable)'}
                 </span>
               </h3>
               <button type="button" onClick={() => setSettlingDebt(null)}>
@@ -802,7 +755,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
 
             <div className="p-4 bg-slate-50 dark:bg-black/20 rounded-2xl space-y-2 border border-slate-100 dark:border-white/5">
               <div className="flex justify-between text-xs">
-                <span className="text-slate-400">{settlingDebt.type === 'payable' ? 'ເຈົ້າໜີ້:' : 'ລູກໜີ້:'}</span>
+                <span className="text-slate-400">{settlingDebt.type === 'payable' ? 'ເຈົ້າໜີ້:' : 'ລູກໜີ້/ຜູ້ຢືມ:'}</span>
                 <span className="font-bold text-slate-900 dark:text-white">{settlingDebt.partyName}</span>
               </div>
               <div className="flex justify-between text-xs">
@@ -811,19 +764,10 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                   {Math.round(Number(settlingDebt.amount) || 0).toLocaleString()} ₭
                 </span>
               </div>
-              {settlingDebt.invoiceNo && (
-                <div className="flex justify-between text-xs">
-                  <span className="text-slate-400">Invoice:</span>
-                  <span className="font-mono font-bold text-blue-500">{settlingDebt.invoiceNo}</span>
-                </div>
-              )}
             </div>
 
-            {/* Payment Channel Selection */}
             <div className="space-y-1">
-              <label className="text-[9.5px] font-black uppercase text-slate-400">
-                {settlingDebt.type === 'payable' ? 'ຊຳລະຜ່ານຊ່ອງທາງໃດ?' : 'ຮັບເງິນຜ່ານຊ່ອງທາງໃດ?'}
-              </label>
+              <label className="text-[9.5px] font-black uppercase text-slate-400">ຊ່ອງທາງການເງິນ</label>
               <select
                 className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
                 value={settleChannel}
@@ -835,36 +779,26 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
               </select>
             </div>
 
-            {/* Settle Date */}
-            <div className="space-y-1">
-              <label className="text-[9.5px] font-black uppercase text-slate-400">ວັນທີຊຳລະຕົວຈິງ (Payment Date)</label>
-              <input
-                type="date"
-                className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white"
-                value={settleDate}
-                onChange={e => setSettleDate(e.target.value)}
-              />
-            </div>
-
-            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 leading-normal">
-              💡 ລະບົບຈະສ້າງລາຍການ <strong>{settlingDebt.type === 'payable' ? 'Expense' : 'Income'}</strong> ໃນ Finance ພ້ອມຕິດຮູບໃບ Invoice ໃຫ້ທັນທີ!
-            </p>
-
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setSettlingDebt(null)}
-                className="flex-1 py-3 bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-xl font-black text-xs uppercase"
-              >
-                Cancel
-              </button>
+            {/* 🌟 2 ACTION BUTTONS: SYNC FINANCE OR ARCHIVE AS REMINDER ONLY */}
+            <div className="space-y-2 pt-2">
               <button
                 type="button"
                 disabled={settlingLoading}
-                onClick={handleExecuteSettlement}
-                className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20"
+                onClick={handleExecuteSettlementWithFinance}
+                className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
               >
-                {settlingLoading ? 'Processing...' : 'Confirm Settlement'}
+                <Check className="w-4 h-4" />
+                <span>1. ຊຳລະ & Sync ເຂົ້າ Finance ({settlingDebt.type === 'payable' ? 'ລາຍຈ່າຍ' : 'ລາຍຮັບ'})</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={settlingLoading}
+                onClick={handleArchiveWithoutFinance}
+                className="w-full py-3 bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-slate-700 dark:text-slate-300 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Archive className="w-4 h-4 text-amber-500" />
+                <span>2. Archive / ປິດໜີ້ເທົ່ານັ້ນ (ບໍ່ດຶງເຂົ້າ Finance)</span>
               </button>
             </div>
 
@@ -872,14 +806,14 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         </div>
       )}
 
-      {/* ================= 7. FULL IMAGE VIEWER MODAL ================= */}
+      {/* Image Viewer */}
       {previewImageUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-2xl rounded-[2.5rem] p-6 shadow-2xl border border-white/10 space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h4 className="text-xs font-black uppercase text-slate-900 dark:text-white flex items-center gap-1.5">
                 <ImageIcon className="w-4 h-4 text-blue-500" />
-                <span>Invoice View</span>
+                <span>Invoice Full View</span>
               </h4>
               <button type="button" onClick={() => setPreviewImageUrl(null)}>
                 <X className="w-5 h-5 text-slate-400" />
