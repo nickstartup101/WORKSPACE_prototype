@@ -9,11 +9,11 @@ import {
 } from 'recharts';
 import { 
   Plus, Trash2, Edit3, Save, X, Search, Download, 
-  BarChart3, List, Check, Receipt, ShoppingBag, Layers, 
+  List, Check, Receipt, ShoppingBag, Layers, 
   Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
-  Building2, TrendingUp, DollarSign, Calendar, Filter,
-  ArrowUpRight, ArrowDownRight, Tag, AlertCircle, ShoppingCart,
-  Clock, Hash, FileText
+  Building2, TrendingUp, Calendar, 
+  ArrowUpRight, ArrowDownRight, ShoppingCart,
+  Clock, Hash, HelpCircle
 } from 'lucide-react';
 import { format, isSameMonth, parseISO, subMonths, getDate, getDaysInMonth } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { COMMON_RESOURCES } from '../constants';
 import ApprovalModal from './ApprovalModal';
 
-// Supplier Code abbreviations for automatic Bill No generation
+// Supplier Code abbreviations
 const SUPPLIER_CODES: Record<string, string> = {
   'CHANHOM': 'CH',
   'LATDA': 'LD',
@@ -58,10 +58,10 @@ export default function Suppliers() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
 
-  // Mode Switcher: 'batch' (Multi-Item in 1 Bill) vs 'single' (Single Item Fast Entry)
+  // Mode Switcher: 'batch' vs 'single'
   const [entryMode, setEntryMode] = useState<'batch' | 'single'>('batch');
 
-  // Product Manager Modal States
+  // Product Manager States
   const [showProductManager, setShowProductManager] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [editProductName, setEditProductName] = useState('');
@@ -69,18 +69,15 @@ export default function Suppliers() {
   const [editProductIsDurable, setEditProductIsDurable] = useState(false);
   const [editProductBoxSize, setEditProductBoxSize] = useState<number>(12);
 
-  // Edit Single Historical Price Modal
+  // Edit Modal State
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editPriceData, setEditPriceData] = useState<any>(null);
-
-  // Receipt Viewer Modal
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
-  // --- Bill Entry Form States ---
+  // Form States
   const [billDate, setBillDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
   const [billTime, setBillTime] = useState<string>(format(new Date(), 'HH:mm'));
   const [supplier, setSupplier] = useState<string>('CHANHOM');
-  const [billSequence, setBillSequence] = useState<number>(1); // 🌟 ລຳດັບບິນໃນມື້ດຽວກັນ (1, 2, 3...)
   const [category, setCategory] = useState<ExpenseCategory>('purchasing');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
   const [currency, setCurrency] = useState<string>('LAK');
@@ -89,7 +86,7 @@ export default function Suppliers() {
   const [billRemark, setBillRemark] = useState<string>('');
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // Items list in current active bill
+  // Items in active bill
   const [billItems, setBillItems] = useState<FormItemRow[]>([
     {
       id: 'item-1',
@@ -106,27 +103,23 @@ export default function Suppliers() {
     }
   ]);
 
-  // Admin Approval State
+  // Approval Modal State
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalType, setApprovalType] = useState<'create' | 'delete' | null>(null);
   const [pendingAction, setPendingAction] = useState<any>(null);
 
-  // Subscribe to Firestore
+  // Listen to Firestore
   useEffect(() => {
     const qP = query(collection(db, 'products'), orderBy('name'));
     const unsubscribeP = onSnapshot(qP, (snap) => {
       setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'products');
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'products'));
 
     const qS = query(collection(db, 'supplierPrices'));
     const unsubscribeS = onSnapshot(qS, (snap) => {
       setSupplierPrices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'supplierPrices');
-    });
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'supplierPrices'));
 
     return () => {
       unsubscribeP();
@@ -134,49 +127,34 @@ export default function Suppliers() {
     };
   }, []);
 
-  // 🌟 Auto Detect next Bill Sequence for the same supplier on the same date
-  useEffect(() => {
-    try {
-      const code = SUPPLIER_CODES[supplier] || (supplier ? supplier.slice(0, 2).toUpperCase() : 'OT');
-      const parts = billDate.split('-');
-      if (parts.length === 3) {
-        const ddmmyyyy = `${parts[2]}${parts[1]}${parts[0]}`;
-        const basePrefix = `#${ddmmyyyy}${code}`;
-        
-        // Count distinct bills existing with this prefix
-        const existingBillNos = new Set<string>();
-        supplierPrices.forEach(p => {
-          if (p.billNo && p.billNo.startsWith(basePrefix)) {
-            existingBillNos.add(p.billNo);
-          }
-        });
-
-        // If there are already bills today, suggest the next sequence number
-        const count = existingBillNos.size;
-        setBillSequence(count > 0 ? count + 1 : 1);
-      }
-    } catch {
-      setBillSequence(1);
-    }
-  }, [billDate, supplier, supplierPrices]);
-
-  // 🌟 Auto Bill No Generation with Sequence Suffix (e.g. #15082026CH-1, #15082026CH-2)
+  // 🌟 AUTOMATIC BILL SEQUENCE (SEQ) CALCULATION FOR SAME DATE + SAME SUPPLIER
   const generatedBillNo = useMemo(() => {
     try {
       const parts = billDate.split('-');
       if (parts.length === 3) {
         const ddmmyyyy = `${parts[2]}${parts[1]}${parts[0]}`;
         const code = SUPPLIER_CODES[supplier] || (supplier ? supplier.slice(0, 2).toUpperCase() : 'OT');
-        const suffix = billSequence > 1 ? `-${billSequence}` : '-1';
-        return `#${ddmmyyyy}${code}${suffix}`;
+        const basePrefix = `#${ddmmyyyy}${code}`;
+
+        // Find existing distinct bills for this date and supplier
+        const existingBills = new Set<string>();
+        supplierPrices.forEach(p => {
+          if (p.date === billDate && p.supplier === supplier && p.billNo) {
+            existingBills.add(p.billNo);
+          }
+        });
+
+        // Auto assign next sequence
+        const seq = existingBills.size + 1;
+        return `${basePrefix}-${seq}`;
       }
     } catch {
       // fallback
     }
     return `#${format(new Date(), 'ddMMyyyy')}${SUPPLIER_CODES[supplier] || 'OT'}-1`;
-  }, [billDate, supplier, billSequence]);
+  }, [billDate, supplier, supplierPrices]);
 
-  // Sort supplierPrices by date descending, then time descending
+  // Sort supplierPrices by date descending
   const sortedSupplierPrices = useMemo(() => {
     return [...supplierPrices].sort((a, b) => {
       const dateA = a.date || '';
@@ -184,10 +162,7 @@ export default function Suppliers() {
       if (dateA !== dateB) return dateB.localeCompare(dateA);
       const timeA = a.time || '';
       const timeB = b.time || '';
-      if (timeA !== timeB) return timeB.localeCompare(timeA);
-      const secondsA = a.createdAt?.seconds || 0;
-      const secondsB = b.createdAt?.seconds || 0;
-      return secondsB - secondsA;
+      return timeB.localeCompare(timeA);
     });
   }, [supplierPrices]);
 
@@ -237,9 +212,7 @@ export default function Suppliers() {
             dailyMap[dayNum].lastMonth += amount;
           }
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     });
 
     const diffAmount = currentMonthCOGS - previousMonthCOGS;
@@ -287,7 +260,6 @@ export default function Suppliers() {
     reader.readAsDataURL(file);
   };
 
-  // Item Rows Management
   const addNewItemRow = () => {
     setBillItems(prev => [
       ...prev,
@@ -340,7 +312,6 @@ export default function Suppliers() {
     }
   };
 
-  // Grand Total of current bill
   const grandTotalLAK = useMemo(() => {
     const rate = currency === 'LAK' ? 1 : (Number(exchangeRate) || 1);
     return billItems.reduce((acc, item) => {
@@ -351,7 +322,7 @@ export default function Suppliers() {
     }, 0);
   }, [billItems, currency, exchangeRate]);
 
-  // Submit the Bill (Single or Batch)
+  // Submit the Bill
   const handleSaveBillBatch = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -470,78 +441,6 @@ export default function Suppliers() {
     }
   };
 
-  // Product Master Update / Delete Handlers
-  const handleUpdateProductName = async (id: string) => {
-    if (!editProductName.trim()) return;
-    try {
-      setSaveLoading(true);
-      await updateDoc(doc(db, 'products', id), {
-        name: editProductName.trim(),
-        unit: editProductUnit.trim() || 'UNIT',
-        isDurable: editProductIsDurable,
-        boxSize: Number(editProductBoxSize) || 12,
-        updatedAt: serverTimestamp()
-      });
-      setEditingProduct(null);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'products');
-    } finally {
-      setSaveLoading(false);
-    }
-  };
-
-  const handleDeleteProduct = async (id: string) => {
-    if (!confirm(i18n.language === 'la' ? 'ທ່ານແນ່ໃຈບໍ່ທີ່ຈະລົບສິນຄ້ານີ້?' : 'Delete this product?')) return;
-    try {
-      await deleteDoc(doc(db, 'products', id));
-      alert("Product deleted successfully");
-    } catch (err: any) {
-      handleFirestoreError(err, OperationType.DELETE, 'products');
-    }
-  };
-
-  // Update single price entry
-  const handleUpdatePrice = async () => {
-    if (!editingPriceId || !editPriceData) return;
-    try {
-      setSaveLoading(true);
-      const rate = editPriceData.currency === 'LAK' ? 1 : (Number(editPriceData.exchangeRate) || 1);
-      const qty = Number(editPriceData.quantity) || 1;
-      const singlePriceOrig = Number(editPriceData.priceOriginal) || 0;
-      const calculatedPriceLAK = singlePriceOrig * rate;
-      const totalOrig = singlePriceOrig * qty;
-      const totalLAK = totalOrig * rate;
-
-      await updateDoc(doc(db, 'supplierPrices', editingPriceId), {
-        ...editPriceData,
-        exchangeRate: rate,
-        priceLAK: calculatedPriceLAK,
-        totalPriceOriginal: totalOrig,
-        totalPriceLAK: totalLAK,
-        updatedAt: serverTimestamp()
-      });
-      setEditingPriceId(null);
-      setEditPriceData(null);
-      alert("Record updated successfully");
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'supplierPrices');
-    } finally {
-      setSaveLoading(false);
-    }
-  };
-
-  const executeApprovedAction = async () => {
-    if (approvalType === 'delete' && pendingAction) {
-      try {
-        await deleteDoc(doc(db, 'supplierPrices', pendingAction));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, 'supplierPrices');
-      }
-    }
-    setApprovalType(null);
-    setPendingAction(null);
-  };
-
   // Export to Excel
   const handleExport = () => {
     const headers = ['Bill No', 'Date', 'Category', 'Payment Method', 'Product', 'Supplier', 'Price LAK', 'Total LAK', 'Quantity', 'Unit', 'Remark', 'User'];
@@ -623,7 +522,7 @@ export default function Suppliers() {
               </h3>
             </div>
 
-            {/* Compared to previous month badge */}
+            {/* Change Badge */}
             <div className="flex items-center gap-2 pt-1">
               <span className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-black flex items-center gap-1 ${
                 cogsAnalytics.diffAmount > 0 
@@ -645,7 +544,7 @@ export default function Suppliers() {
             </div>
           </div>
 
-          {/* Last month reference */}
+          {/* Reference row */}
           <div className="pt-5 border-t border-white/10 mt-6 grid grid-cols-2 gap-4">
             <div>
               <span className="text-[9.5px] font-black uppercase text-slate-300">
@@ -711,14 +610,14 @@ export default function Suppliers() {
 
       </div>
 
-      {/* ================= 3. 🌟 REDESIGNED MODULAR PROCUREMENT ENTRY CARD (4 SECTIONS) ================= */}
+      {/* ================= 3. 🌟 CLEAN 4-SECTION PROCUREMENT CARD (NO OVERLAP + AUTO SEQ) ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* LEFT: 4-SECTION MODULAR ENTRY CARD (5 Cols) */}
+        {/* LEFT: 4-SECTION ENTRY CARD (5 Cols) */}
         <div className="xl:col-span-5 space-y-6">
           <div className="bg-white dark:bg-[#073069] rounded-[2.5rem] p-6 sm:p-7 border border-slate-200/80 dark:border-white/10 shadow-xl space-y-6">
             
-            {/* Card Header & Entry Mode Toggle */}
+            {/* Header & Mode Switch */}
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-4">
               <div>
                 <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full text-[9px] font-black uppercase tracking-wider">
@@ -730,7 +629,6 @@ export default function Suppliers() {
                 </h3>
               </div>
 
-              {/* Mode Toggle Switch */}
               <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200/80 dark:border-white/10">
                 <button
                   type="button"
@@ -764,31 +662,35 @@ export default function Suppliers() {
 
             <form onSubmit={handleSaveBillBatch} className="space-y-6">
               
-              {/* 🏷️ SECTION 1: ຂໍ້ມູນໃບບິນ & ຜູ້ສະໜອງ (BILL HEADER & VENDOR INFO) */}
+              {/* 🏷️ SECTION 1: ຂໍ້ມູນໃບບິນ & ຜູ້ສະໜອງ (FIXED OVERLAP & AUTO SEQ) */}
               <div className="p-4 bg-slate-50/80 dark:bg-black/20 rounded-2xl border border-slate-200/60 dark:border-white/5 space-y-4">
-                <div className="flex justify-between items-center border-b border-slate-200/60 dark:border-white/5 pb-2">
-                  <span className="text-[10px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                
+                {/* Section Title & Auto Bill No Display */}
+                <div className="flex justify-between items-center border-b border-slate-200/60 dark:border-white/5 pb-2.5">
+                  <span className="text-[10.5px] font-black uppercase text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                     <span className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-black">1</span>
                     <span>{i18n.language === 'la' ? 'ຂໍ້ມູນໃບບິນ & ຜູ້ສະໜອງ' : 'Bill Header & Vendor'}</span>
                   </span>
                   
-                  {/* Bill Suffix Indicator */}
-                  <span className="text-[9.5px] font-mono font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
-                    {generatedBillNo}
-                  </span>
+                  {/* 🌟 Auto Generated Bill No Badge */}
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] font-mono font-black text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                      {generatedBillNo}
+                    </span>
+                  </div>
                 </div>
 
-                {/* 🌟 DATE & TIME ROW (Clean 2-Column Grid - No Overlap) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 🌟 CLEAN DATE & TIME LAYOUT (NO OVERLAP) */}
+                <div className="space-y-3">
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
                       <Calendar className="w-3 h-3 text-slate-400" />
-                      <span>{i18n.language === 'la' ? 'ວັນທີຊື້' : 'Purchase Date'}</span>
+                      <span>{i18n.language === 'la' ? 'ວັນທີຊື້ (Purchase Date)' : 'Purchase Date'}</span>
                     </label>
                     <input 
                       type="date"
                       required
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white outline-none"
+                      className="w-full h-11 px-3.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white outline-none"
                       value={billDate}
                       onChange={e => setBillDate(e.target.value)}
                     />
@@ -797,69 +699,46 @@ export default function Suppliers() {
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
                       <Clock className="w-3 h-3 text-slate-400" />
-                      <span>{i18n.language === 'la' ? 'ເວລາ' : 'Time'}</span>
+                      <span>{i18n.language === 'la' ? 'ເວລາ (Time)' : 'Time'}</span>
                     </label>
                     <input 
                       type="time"
                       required
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white outline-none"
+                      className="w-full h-11 px-3.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white outline-none"
                       value={billTime}
                       onChange={e => setBillTime(e.target.value)}
                     />
                   </div>
                 </div>
 
-                {/* 🌟 SUPPLIER & MULTIPLE BILLS SUFFIX SELECTOR */}
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                  {/* Supplier Select */}
-                  <div className="sm:col-span-8 space-y-1">
-                    <label className="text-[9.5px] font-black uppercase text-slate-400">
-                      {i18n.language === 'la' ? 'ຜູ້ສະໜອງສິນຄ້າ' : 'Supplier'}
-                    </label>
-                    <select 
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
-                      value={supplier}
-                      onChange={e => setSupplier(e.target.value)}
-                      required
-                    >
-                      <option value="CHANHOM">CHANHOM (CH)</option>
-                      <option value="LATDA">LATDA (LD)</option>
-                      <option value="HEAVENLY">HEAVENLY (HV)</option>
-                      <option value="DMART">DMART (DM)</option>
-                      <option value="MARRY ANN">MARRY ANN (MA)</option>
-                      <option value="OTHER">Other (OT)</option>
-                    </select>
-                  </div>
-
-                  {/* 🌟 MULTIPLE BILLS ON SAME DAY SUFFIX SELECTOR */}
-                  <div className="sm:col-span-4 space-y-1">
-                    <label className="text-[9.5px] font-black uppercase text-slate-400" title="Sequence if buying multiple bills today">
-                      {i18n.language === 'la' ? 'ບິນທີ (Seq)' : 'Bill No. #'}
-                    </label>
-                    <div className="flex items-center gap-1">
-                      <select
-                        className="w-full h-10 px-2 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white outline-none"
-                        value={billSequence}
-                        onChange={e => setBillSequence(Number(e.target.value) || 1)}
-                      >
-                        <option value={1}>ບິນທີ 1 (-1)</option>
-                        <option value={2}>ບິນທີ 2 (-2)</option>
-                        <option value={3}>ບິນທີ 3 (-3)</option>
-                        <option value={4}>ບິນທີ 4 (-4)</option>
-                        <option value={5}>ບິນທີ 5 (-5)</option>
-                      </select>
-                    </div>
-                  </div>
+                {/* Supplier Selection */}
+                <div className="space-y-1">
+                  <label className="text-[9.5px] font-black uppercase text-slate-400">
+                    {i18n.language === 'la' ? 'ຜູ້ສະໜອງສິນຄ້າ (Supplier)' : 'Supplier'}
+                  </label>
+                  <select 
+                    className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
+                    value={supplier}
+                    onChange={e => setSupplier(e.target.value)}
+                    required
+                  >
+                    <option value="CHANHOM">CHANHOM (CH)</option>
+                    <option value="LATDA">LATDA (LD)</option>
+                    <option value="HEAVENLY">HEAVENLY (HV)</option>
+                    <option value="DMART">DMART (DM)</option>
+                    <option value="MARRY ANN">MARRY ANN (MA)</option>
+                    <option value="OTHER">Other (OT)</option>
+                  </select>
                 </div>
 
                 {/* Category & Payment Method */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400">
-                      {i18n.language === 'la' ? 'ປະເພດລາຍການ' : 'Category'}
+                      {i18n.language === 'la' ? 'ປະເພດ' : 'Category'}
                     </label>
                     <select 
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
+                      className="w-full h-10 px-2.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
                       value={category}
                       onChange={e => setCategory(e.target.value as ExpenseCategory)}
                       required
@@ -875,10 +754,10 @@ export default function Suppliers() {
 
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400">
-                      {i18n.language === 'la' ? 'ຊ່ອງທາງຈ່າຍ' : 'Payment Method'}
+                      {i18n.language === 'la' ? 'ຊ່ອງທາງຈ່າຍ' : 'Payment'}
                     </label>
                     <select 
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
+                      className="w-full h-10 px-2.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
                       value={paymentMethod}
                       onChange={e => setPaymentMethod(e.target.value as PaymentMethod)}
                       required
@@ -895,7 +774,7 @@ export default function Suppliers() {
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400">Currency</label>
                     <select 
-                      className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
+                      className="w-full h-10 px-2.5 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
                       value={currency}
                       onChange={e => {
                         const c = e.target.value;
@@ -923,12 +802,12 @@ export default function Suppliers() {
                 </div>
               </div>
 
-              {/* 📸 SECTION 2: ແນບຮູບໃບບິນ (RECEIPT ATTACHMENT & FINANCE SYNC) */}
+              {/* 📸 SECTION 2: ແນບຮູບໃບບິນ (RECEIPT ATTACHMENT) */}
               <div className="p-4 bg-slate-50/80 dark:bg-black/20 rounded-2xl border border-slate-200/60 dark:border-white/5 space-y-3">
                 <div className="flex justify-between items-center border-b border-slate-200/60 dark:border-white/5 pb-2">
                   <span className="text-[10px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                     <span className="w-4 h-4 rounded-full bg-blue-500 text-white flex items-center justify-center text-[9px] font-black">2</span>
-                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນ / ໃບຮັບເງິນ (Receipt Image)' : 'Receipt Photo'}</span>
+                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Receipt Photo)' : 'Receipt Photo'}</span>
                   </span>
                   {billImageBase64 && (
                     <button
@@ -979,14 +858,14 @@ export default function Suppliers() {
                 <div className="flex justify-between items-center border-b border-slate-200/60 dark:border-white/5 pb-2">
                   <span className="text-[10px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                     <span className="w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center text-[9px] font-black">3</span>
-                    <span>{entryMode === 'batch' ? `ລາຍການສິນຄ້າ (${billItems.length} ອັນ)` : 'ລາຍການສິນຄ້າ (Single Item)'}</span>
+                    <span>{entryMode === 'batch' ? `ລາຍການສິນຄ້າ (${billItems.length} ອັນ)` : 'ລາຍການສິນຄ້າ'}</span>
                   </span>
                   
                   {entryMode === 'batch' && (
                     <button
                       type="button"
                       onClick={addNewItemRow}
-                      className="flex items-center gap-1 px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[9.5px] font-black uppercase transition-all"
+                      className="flex items-center gap-1 px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-[9.5px] font-black uppercase transition-all cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>{i18n.language === 'la' ? 'ເພີ່ມລາຍການ' : 'Add Item'}</span>
@@ -1075,21 +954,21 @@ export default function Suppliers() {
                           )}
                         </div>
 
-                        {/* Price Mode Toggle (Total vs Per Pack) */}
+                        {/* Price Mode Toggle */}
                         <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
                           <button
                             type="button"
                             onClick={() => updateItemRow(index, { priceMode: 'total' })}
                             className={`py-1 rounded-lg text-[9.5px] font-black ${item.priceMode === 'total' ? 'bg-[#052659] text-white' : 'text-slate-500'}`}
                           >
-                            {i18n.language === 'la' ? 'ລາຄາລວມ (Total)' : 'Total Price'}
+                            Total Price
                           </button>
                           <button
                             type="button"
                             onClick={() => updateItemRow(index, { priceMode: 'per_pack' })}
                             className={`py-1 rounded-lg text-[9.5px] font-black ${item.priceMode === 'per_pack' ? 'bg-[#052659] text-white' : 'text-slate-500'}`}
                           >
-                            {i18n.language === 'la' ? 'ລາຄາ/ແພັກ (Per Pack)' : 'Per Pack'}
+                            Per Pack
                           </button>
                         </div>
 
@@ -1192,7 +1071,6 @@ export default function Suppliers() {
         {/* RIGHT: PRICING & PROCUREMENT INDEX FEED (7 Cols) */}
         <div className="xl:col-span-7 space-y-6">
 
-          {/* Records Table */}
           <div className="high-density-card p-0 flex flex-col min-h-[550px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
             <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-wrap justify-between items-center gap-3 sticky top-0 z-10 backdrop-blur-md">
@@ -1384,7 +1262,7 @@ export default function Suppliers() {
 
       </div>
 
-      {/* ================= RECEIPT PREVIEW MODAL ================= */}
+      {/* ================= MODALS ================= */}
       {previewImageUrl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-2xl rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col space-y-4 max-h-[90vh]">
@@ -1404,7 +1282,7 @@ export default function Suppliers() {
         </div>
       )}
 
-      {/* ================= PRODUCT MANAGER MODAL ================= */}
+      {/* Product Manager */}
       {showProductManager && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-lg rounded-3xl p-6 shadow-2xl border border-white/10 flex flex-col max-h-[85vh]">
@@ -1426,7 +1304,10 @@ export default function Suppliers() {
                           value={editProductName}
                           onChange={e => setEditProductName(e.target.value)}
                         />
-                        <button type="button" onClick={() => handleUpdateProductName(p.id)} className="p-1.5 bg-emerald-500 text-white rounded-lg">
+                        <button type="button" onClick={async () => {
+                          await updateDoc(doc(db, 'products', p.id), { name: editProductName.trim(), unit: editProductUnit.trim() || 'UNIT' });
+                          setEditingProduct(null);
+                        }} className="p-1.5 bg-emerald-500 text-white rounded-lg">
                           <Check className="w-3.5 h-3.5" />
                         </button>
                         <button type="button" onClick={() => setEditingProduct(null)} className="p-1.5 bg-slate-200 dark:bg-white/10 rounded-lg">
@@ -1445,66 +1326,15 @@ export default function Suppliers() {
                       <button onClick={() => { setEditingProduct(p); setEditProductName(p.name); setEditProductUnit(p.unit || ''); }} className="p-1.5 text-blue-500">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 text-red-500">
+                      <button onClick={async () => {
+                        if (confirm('Delete product?')) await deleteDoc(doc(db, 'products', p.id));
+                      }} className="p-1.5 text-red-500">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   )}
                 </div>
               ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ================= EDIT SINGLE PRICE MODAL ================= */}
-      {editingPriceId && editPriceData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 space-y-3">
-            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-2">
-              <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">Modify Entry</h3>
-              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }}><X className="w-4 h-4 text-slate-400" /></button>
-            </div>
-            <div className="space-y-2 text-xs">
-              <div>
-                <label className="text-[9px] font-black uppercase text-slate-400">Bill No</label>
-                <input className="w-full p-2 rounded-xl border text-xs font-mono font-bold" value={editPriceData.billNo || ''} onChange={e => setEditPriceData({...editPriceData, billNo: e.target.value})} />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[9px] font-black uppercase text-slate-400">Category</label>
-                  <select className="w-full p-2 rounded-xl border text-xs font-bold" value={editPriceData.category || 'purchasing'} onChange={e => setEditPriceData({...editPriceData, category: e.target.value})}>
-                    <option value="purchasing">Purchasing</option>
-                    <option value="rental">Rental</option>
-                    <option value="salary">Salary</option>
-                    <option value="operation">Operation</option>
-                    <option value="admin">Admin</option>
-                    <option value="other">Other</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[9px] font-black uppercase text-slate-400">Paid Via</label>
-                  <select className="w-full p-2 rounded-xl border text-xs font-bold" value={editPriceData.paymentMethod || 'Cash'} onChange={e => setEditPriceData({...editPriceData, paymentMethod: e.target.value})}>
-                    <option value="Cash">Cash</option>
-                    <option value="Onepay">Onepay</option>
-                    <option value="LDB">LDB</option>
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[9px] font-black uppercase text-slate-400">Price</label>
-                  <input type="number" step="any" className="w-full p-2 rounded-xl border text-xs font-mono font-bold" value={editPriceData.priceOriginal || 0} onChange={e => setEditPriceData({...editPriceData, priceOriginal: parseFloat(e.target.value) || 0})} />
-                </div>
-                <div>
-                  <label className="text-[9px] font-black uppercase text-slate-400">Quantity</label>
-                  <input type="number" step="any" className="w-full p-2 rounded-xl border text-xs font-mono font-bold" value={editPriceData.quantity || 1} onChange={e => setEditPriceData({...editPriceData, quantity: parseFloat(e.target.value) || 1})} />
-                </div>
-              </div>
-            </div>
-            <div className="flex gap-2 pt-2">
-              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold">Cancel</button>
-              <button type="button" disabled={saveLoading} onClick={handleUpdatePrice} className="flex-1 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold">Update</button>
             </div>
           </div>
         </div>
