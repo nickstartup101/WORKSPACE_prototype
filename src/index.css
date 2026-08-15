@@ -1,3 +1,21 @@
+/* 🌟 ດຶງຟ້ອນ Noto Sans Lao ເຂົ້າ CSS ໂດຍກົງ */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Lao:wght@300;400;500;600;700;800;900&family=Alice&display=swap');
+
+/* ບັງຄັບໃຫ້ທຸກ Tag ແລະ ປຸ່ມຕ່າງໆໃນ iOS/Mac ສະແດງ Noto Sans Lao */
+* {
+  font-family: 'Noto Sans Lao', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body, html, button, input, select, textarea {
+  font-family: 'Noto Sans Lao', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+}
+
+/* ສຳລັບຫົວຂໍ້ໂລໂກ້ Alice */
+.font-alice {
+  font-family: 'Alice', serif !important;
+}
 @import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Lao:wght@100..900&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Outfit:wght@100..900&family=Alice&display=swap');
 
