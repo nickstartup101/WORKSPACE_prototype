@@ -24,7 +24,8 @@ import {
   ChevronLeft,
   ChevronRight,
   CheckCircle,
-  PieChart
+  PieChart,
+  Receipt
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
@@ -40,6 +41,7 @@ import Settings from './components/Settings';
 import PinModal from './components/PinModal';
 import ProcurementPlanner from './components/ProcurementPlanner';
 import FinanceReport from './components/FinanceReport';
+import DebtLedger from './components/DebtLedger';
 
 // Premium Text Logo Component
 const TextLogo = ({ centered = false, dark = false, name = "La Dolce" }: { centered?: boolean, dark?: boolean, name?: string | null }) => (
@@ -282,10 +284,11 @@ export default function App() {
     );
   }
 
-  // ✅ 🧭 ລາຍການເມນູທັງໝົດ (ລວມທັງ 'Finance Report'):
+  // ✅ 🧭 ລາຍການເມນູທັງໝົດໃນລະບົບ (ລວມທັງ Report ແລະ Debts AP/AR):
   const navItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
     { id: 'report', icon: PieChart, label: i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ' : 'Finance Report' },
+    { id: 'debts', icon: Receipt, label: i18n.language === 'la' ? 'ໜີ້ຕ້ອງສົ່ງ & ຮັບ (AP/AR)' : 'Debt Ledger' },
     { id: 'suppliers', icon: Truck, label: t('suppliers') },
     { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
     { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
@@ -476,6 +479,7 @@ export default function App() {
            <div className="max-w-7xl mx-auto space-y-6">
              {activeTab === 'dashboard' && <Dashboard userSettings={userSettings} user={user} selectedBranch={selectedBranch} />}
              {activeTab === 'report' && <FinanceReport selectedBranch={selectedBranch} />}
+             {activeTab === 'debts' && <DebtLedger selectedBranch={selectedBranch} />}
              {activeTab === 'suppliers' && <Suppliers />}
              {activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
              {activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
