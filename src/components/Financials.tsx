@@ -2,20 +2,18 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { auth, db, storage, handleFirestoreError, OperationType } from '../firebase';
 import { 
   collection, addDoc, onSnapshot, query, orderBy, 
-  where, limit, serverTimestamp, setDoc, doc, getDoc, getDocs, deleteDoc
+  deleteDoc, doc, setDoc, getDoc, getDocs, serverTimestamp 
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
 import { format, isSameMonth, parseISO, subDays } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
-import { motion } from 'motion/react';
-import { jsPDF } from 'jspdf';
 import { 
   Upload, Receipt, PlusCircle, ArrowUpCircle, ArrowDownCircle, 
   Info, Landmark, Download, BarChart3, Eye, EyeOff, X, Trash2, 
   RefreshCw, Sparkles, CheckCircle, FileText, Wallet, CreditCard,
   Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
-  Percent, ArrowUpRight, ArrowDownRight, Tag
+  Percent, ArrowUpRight, ArrowDownRight, Edit3, Check, Split
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -29,7 +27,6 @@ export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 export default function Financials({ appConfig, selectedBranch }: { appConfig: any, selectedBranch?: string }) {
   const { t, i18n } = useTranslation();
   
-  // Transaction lists & live data states
   const [allTransactions, setAllTransactions] = useState<any[]>([]);
   const [dailyTransactions, setDailyTransactions] = useState<any[]>([]);
   const [dailySummary, setDailySummary] = useState<any>(null);
@@ -37,19 +34,18 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [loading, setLoading] = useState(true);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
-  // Timeframe View Mode: 'month' (This Month) vs 'all' (All-Time)
+  // Timeframe View Mode: 'month' vs 'all'
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
   // Date View State
   const [viewDate, setViewDate] = useState(format(new Date(), 'yyyy-MM-dd'));
 
-  // Bank Account Modal State
+  // Bank Modal States
   const [showBankModal, setShowBankModal] = useState(false);
   const [bankAmount, setBankAmount] = useState(0);
   const [bankChannel, setBankChannel] = useState<PaymentChannel>('Onepay');
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalType, setApprovalType] = useState<'transaction' | 'bank' | null>(null);
-  const [pendingAction, setPendingAction] = useState<any>(null);
   const todayStr = format(new Date(), 'yyyy-MM-dd');
 
   // Form State
@@ -66,20 +62,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
   const [displayAmount, setDisplayAmount] = useState('');
 
-  const formatWithCommas = (val: string) => {
-    const num = val.replace(/,/g, '');
-    if (!num) return '';
-    if (isNaN(Number(num))) return displayAmount;
-    return Number(num).toLocaleString();
-  };
-
-  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawValue = e.target.value.replace(/,/g, '');
-    if (rawValue === '' || !isNaN(Number(rawValue))) {
-      setDisplayAmount(formatWithCommas(e.target.value));
-      setFormData({ ...formData, amount: Number(rawValue) || 0 });
-    }
-  };
+  // 🌟 3-WAY SPLIT INCOME STATES (Cash, Onepay, LDB)
+  const [is3WaySplit, setIs3WaySplit] = useState(true); // Default to true for Income
+  const [splitCash, setSplitCash] = useState<number>(0);
+  const [splitCashDisplay, setSplitCashDisplay] = useState<string>('');
+  const [splitOnepay, setSplitOnepay] = useState<number>(0);
+  const [splitOnepayDisplay, setSplitOnepayDisplay] = useState<string>('');
+  const [splitLDB, setSplitLDB] = useState<number>(0);
+  const [splitLDBDisplay, setSplitLDBDisplay] = useState<string>('');
 
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -90,24 +80,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
   const [txToDelete, setTxToDelete] = useState<any>(null);
   const [showDeletePinModal, setShowDeletePinModal] = useState(false);
-  const [showClearAllPinModal, setShowClearAllPinModal] = useState(false);
-
-  // PDF Statement State
-  const [showStatementModal, setShowStatementModal] = useState(false);
-  const [statementStartDate, setStatementStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return format(d, 'yyyy-MM-dd');
-  });
-  const [statementEndDate, setStatementEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [generatingStatement, setGeneratingStatement] = useState(false);
-
-  // Monthly Summary & AI Advisory State
-  const [showMonthlySummaryModal, setShowMonthlySummaryModal] = useState(false);
-  const [selectedMonthlyMonth, setSelectedMonthlyMonth] = useState(() => format(new Date(), 'yyyy-MM'));
-  const [monthlySummaryData, setMonthlySummaryData] = useState<any>(null);
-  const [loadingMonthlySummary, setLoadingMonthlySummary] = useState(false);
-  const [generatingMonthlyPDF, setGeneratingMonthlyPDF] = useState(false);
 
   // Supplier Prices Integration
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
@@ -117,7 +89,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [billPaymentSources, setBillPaymentSources] = useState<{ [id: string]: PaymentChannel }>({});
   const [importingBillId, setImportingBillId] = useState<string | null>(null);
 
-  // Helper normalizer for payment sources (covers legacy strings)
   const normalizePaymentChannel = (src?: string): PaymentChannel => {
     if (!src) return 'Cash';
     const s = src.toLowerCase();
@@ -126,35 +97,76 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return 'Cash';
   };
 
-  // Clipboard image paste support
-  useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          const blob = items[i].getAsFile();
-          if (blob) {
-            const pastedFile = new File(
-              [blob], 
-              `pasted-receipt-${format(new Date(), 'yyyy-MM-dd_HH-mm-ss')}.png`, 
-              { type: 'image/png' }
-            );
-            setFormData(prev => ({ ...prev, receipt: pastedFile }));
-            setDeleteReceipt(false);
-            break;
-          }
-        }
+  const formatWithCommas = (val: string | number) => {
+    const clean = String(val).replace(/,/g, '');
+    if (!clean || isNaN(Number(clean))) return '';
+    return Number(clean).toLocaleString();
+  };
+
+  // 🌟 SMART AUTO-BALANCE CALCULATION
+  const handleTotalAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawValue = e.target.value.replace(/,/g, '');
+    if (rawValue === '' || !isNaN(Number(rawValue))) {
+      const num = Number(rawValue) || 0;
+      setDisplayAmount(formatWithCommas(rawValue));
+      setFormData(prev => ({ ...prev, amount: num }));
+
+      if (formData.type === 'income' && is3WaySplit) {
+        // Auto-assign remaining balance to LDB or Cash
+        const remaining = Math.max(0, num - splitCash - splitOnepay);
+        setSplitLDB(remaining);
+        setSplitLDBDisplay(remaining > 0 ? formatWithCommas(remaining) : '');
       }
-    };
+    }
+  };
 
-    window.addEventListener('paste', handlePaste);
-    return () => {
-      window.removeEventListener('paste', handlePaste);
-    };
-  }, []);
+  const handleSplitCashChange = (valStr: string) => {
+    const clean = valStr.replace(/,/g, '');
+    if (clean === '' || !isNaN(Number(clean))) {
+      const val = Number(clean) || 0;
+      setSplitCash(val);
+      setSplitCashDisplay(formatWithCommas(clean));
 
-  // Listen to ALL transactions for executive calculations & branch filter
+      // Auto balance LDB: Total - Cash - OnePay
+      const total = formData.amount || (val + splitOnepay + splitLDB);
+      const remaining = Math.max(0, total - val - splitOnepay);
+      setSplitLDB(remaining);
+      setSplitLDBDisplay(remaining > 0 ? formatWithCommas(remaining) : '');
+    }
+  };
+
+  const handleSplitOnepayChange = (valStr: string) => {
+    const clean = valStr.replace(/,/g, '');
+    if (clean === '' || !isNaN(Number(clean))) {
+      const val = Number(clean) || 0;
+      setSplitOnepay(val);
+      setSplitOnepayDisplay(formatWithCommas(clean));
+
+      // Auto balance LDB: Total - Cash - OnePay
+      const total = formData.amount || (splitCash + val + splitLDB);
+      const remaining = Math.max(0, total - splitCash - val);
+      setSplitLDB(remaining);
+      setSplitLDBDisplay(remaining > 0 ? formatWithCommas(remaining) : '');
+    }
+  };
+
+  const handleSplitLDBChange = (valStr: string) => {
+    const clean = valStr.replace(/,/g, '');
+    if (clean === '' || !isNaN(Number(clean))) {
+      const val = Number(clean) || 0;
+      setSplitLDB(val);
+      setSplitLDBDisplay(formatWithCommas(clean));
+
+      // Update total to sum if total was smaller
+      const sum = splitCash + splitOnepay + val;
+      if (sum > formData.amount) {
+        setFormData(prev => ({ ...prev, amount: sum }));
+        setDisplayAmount(formatWithCommas(sum));
+      }
+    }
+  };
+
+  // Listen to Firestore transactions
   useEffect(() => {
     const qAll = query(collection(db, 'transactions'), orderBy('date', 'desc'));
     const branchId = selectedBranch || 'branch_1';
@@ -164,7 +176,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const branchFiltered = all.filter((tx: any) => (tx.branchId || 'branch_1') === branchId);
       setAllTransactions(branchFiltered);
 
-      // Filter daily list based on viewDate
       const daily = branchFiltered.filter((tx: any) => tx.date === viewDate);
       daily.sort((a: any, b: any) => (b.time || '').localeCompare(a.time || ''));
       setDailyTransactions(daily);
@@ -173,39 +184,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       handleFirestoreError(error, OperationType.LIST, 'transactions');
     });
 
-    const activeSummaryId = branchId === 'branch_1' ? viewDate : `${viewDate}_${branchId}`;
-    const summaryRef = doc(db, 'dailySummaries', activeSummaryId);
-    
-    const unsubscribeSummary = onSnapshot(summaryRef, async (snap) => {
-      if (snap.exists()) {
-        setDailySummary(snap.data());
-      } else {
-        setDailySummary(null);
-      }
-    });
-
-    // Last 7 days overview
-    const last7Days = Array.from({ length: 7 }, (_, i) => format(subDays(new Date(viewDate), 6 - i), 'yyyy-MM-dd'));
-    const fetchWeekly = async () => {
-      const weekly = [];
-      for (const d of last7Days) {
-        const sDocId = branchId === 'branch_1' ? d : `${d}_${branchId}`;
-        const sRef = doc(db, 'dailySummaries', sDocId);
-        const sSnap = await getDoc(sRef);
-        if (sSnap.exists()) {
-          weekly.push(sSnap.data());
-        } else {
-          weekly.push({ date: d, income: 0, expenses: 0 });
-        }
-      }
-      setWeeklyData(weekly);
-    };
-    fetchWeekly();
-
-    return () => {
-      unsubscribeAll();
-      unsubscribeSummary();
-    };
+    return () => unsubscribeAll();
   }, [viewDate, selectedBranch]);
 
   // Load products and supplierPrices
@@ -222,7 +201,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, []);
 
-  // Sync pullDate and paymentDate with viewDate
+  // Sync pullDate and paymentDate
   useEffect(() => {
     setPullDate(viewDate);
     setPaymentDate(viewDate);
@@ -243,9 +222,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       }
     });
 
-    let totalRevenue = 0; // Income
-    let totalPurchasing = 0; // COGS
-    let totalOPEX = 0; // Other operating expenses
+    let totalRevenue = 0;
+    let totalPurchasing = 0;
+    let totalOPEX = 0;
 
     let cashIncome = 0;
     let cashExpense = 0;
@@ -268,11 +247,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         const cat = (tx.category || '').toLowerCase();
         const isPurchasing = cat.includes('purchas') || cat.includes('supply') || cat.includes('ຊື້');
 
-        if (isPurchasing) {
-          totalPurchasing += amt;
-        } else {
-          totalOPEX += amt;
-        }
+        if (isPurchasing) totalPurchasing += amt;
+        else totalOPEX += amt;
 
         if (ch === 'Cash') cashExpense += amt;
         else if (ch === 'Onepay') onepayExpense += amt;
@@ -313,144 +289,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, [allTransactions, timeframeMode]);
 
-  // Supplier Bills available to pull for selected pullDate
-  const importedSupplierPriceIds = useMemo(() => {
-    const ids = new Set<string>();
-    allTransactions.forEach((tx) => {
-      if (tx.supplierPriceIds && Array.isArray(tx.supplierPriceIds)) {
-        tx.supplierPriceIds.forEach((id: string) => ids.add(id));
-      }
-    });
-    return ids;
-  }, [allTransactions]);
-
-  const supplierBillsForSelectedDate = useMemo(() => {
-    const selectedDatePrices = supplierPrices.filter(p => p.date === pullDate);
-
-    const isOther = (name: string) => {
-      const n = (name || '').trim().toUpperCase();
-      return n === 'OTHER' || n === 'ອື່ນໆ' || n === '';
-    };
-
-    const nonOtherPrices = selectedDatePrices.filter(p => !isOther(p.supplier));
-    const otherPrices = selectedDatePrices.filter(p => isOther(p.supplier));
-
-    const groups: { [supplier: string]: any[] } = {};
-    nonOtherPrices.forEach(p => {
-      const sup = (p.supplier || '').trim();
-      if (!groups[sup]) groups[sup] = [];
-      groups[sup].push(p);
-    });
-
-    const itemTotalLAK = (item: any): number => {
-      if (item.totalPriceLAK !== undefined) return Number(item.totalPriceLAK || 0);
-      return item.currency === 'LAK'
-        ? Number(item.priceOriginal || 0) * (Number(item.quantity) || 1)
-        : Number(item.priceOriginal || 0) * Number(item.exchangeRate || 1) * (Number(item.quantity) || 1);
-    };
-
-    const bills: any[] = [];
-
-    Object.keys(groups).forEach(supplierName => {
-      const items = groups[supplierName];
-      const importedItems = items.filter(it => importedSupplierPriceIds.has(it.id));
-      const pendingItems = items.filter(it => !importedSupplierPriceIds.has(it.id));
-
-      if (importedItems.length > 0) {
-        const totalPrice = importedItems.reduce((sum, item) => sum + itemTotalLAK(item), 0);
-        bills.push({
-          id: `grouped_${supplierName}_imported_${pullDate}`,
-          supplier: supplierName,
-          date: pullDate,
-          totalPrice,
-          items: importedItems,
-          isGrouped: true,
-          sourceIds: importedItems.map(it => it.id),
-          isImported: true
-        });
-      }
-
-      if (pendingItems.length > 0) {
-        const totalPrice = pendingItems.reduce((sum, item) => sum + itemTotalLAK(item), 0);
-        bills.push({
-          id: `grouped_${supplierName}_pending_${pullDate}`,
-          supplier: supplierName,
-          date: pullDate,
-          totalPrice,
-          items: pendingItems,
-          isGrouped: true,
-          sourceIds: pendingItems.map(it => it.id),
-          isImported: false
-        });
-      }
-    });
-
-    otherPrices.forEach(p => {
-      const totalPrice = itemTotalLAK(p);
-      const isImported = importedSupplierPriceIds.has(p.id);
-      bills.push({
-        id: `single_${p.id}`,
-        supplier: p.supplier || 'OTHER',
-        date: pullDate,
-        totalPrice,
-        items: [p],
-        isGrouped: false,
-        sourceIds: [p.id],
-        isImported
-      });
-    });
-
-    return bills;
-  }, [supplierPrices, pullDate, importedSupplierPriceIds]);
-
-  // Pull Supplier Bill into Transactions
-  const handlePullSupplierBill = async (bill: any) => {
-    if (!bill) return;
-    try {
-      setImportingBillId(bill.id);
-      const totalAmount = Math.round(bill.totalPrice || 0);
-
-      if (totalAmount <= 0) {
-        alert(i18n.language === 'la' ? 'ຍອດບິນຕ້ອງຫຼາຍກວ່າ 0 ₭' : 'Bill amount must be greater than 0');
-        return;
-      }
-
-      const selectedSource: PaymentChannel = billPaymentSources[bill.id] || 'Onepay';
-      const todayLocal = new Date();
-      const localTimeString = `${String(todayLocal.getHours()).padStart(2, '0')}:${String(todayLocal.getMinutes()).padStart(2, '0')}`;
-
-      const pNames = bill.items.map((it: any) => products.find(prod => prod.id === it.productId)?.name || 'Item').join(', ');
-      const description = `Purchase supplies from ${bill.supplier}: ${pNames}`;
-
-      await addDoc(collection(db, 'transactions'), {
-        type: 'expense',
-        amount: totalAmount,
-        category: 'Purchasing',
-        description,
-        source: selectedSource,
-        receiptUrl: bill.items[0]?.billImageUrl || '',
-        date: paymentDate,
-        time: localTimeString,
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
-        userId: auth.currentUser?.uid || 'admin',
-        userEmail: auth.currentUser?.email || 'admin@example.com',
-        supplierName: bill.supplier,
-        supplierPriceIds: bill.sourceIds,
-        branchId: selectedBranch || 'branch_1'
-      });
-
-      alert(i18n.language === 'la' 
-        ? `ດຶງລາຍຈ່າຍຈາກ ${bill.supplier} ຈຳນວນ ${totalAmount.toLocaleString()} ₭ (${selectedSource}) ສຳເລັດແລ້ວ!` 
-        : `Successfully imported ${bill.supplier}'s purchase bill (${totalAmount.toLocaleString()} ₭) via ${selectedSource}!`);
-    } catch (err: any) {
-      console.error("Error pulling bill:", err);
-      alert(`ເກີດຂໍ້ຜິດພາດ: ${err.message}`);
-    } finally {
-      setImportingBillId(null);
-    }
-  };
-
   // Upload image to Firebase Storage
   const handleUpload = async (file: File, uploadDate: string) => {
     if (!file.type.startsWith('image/')) {
@@ -458,20 +296,19 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       await uploadBytes(fileRef, file);
       return await getDownloadURL(fileRef);
     }
-
     try {
       const compressedFile = await imageCompression(file, { maxSizeMB: 0.3, maxWidthOrHeight: 1200 });
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${compressedFile.name}`);
       await uploadBytes(fileRef, compressedFile);
       return await getDownloadURL(fileRef);
-    } catch (err) {
+    } catch {
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${file.name}`);
       await uploadBytes(fileRef, file);
       return await getDownloadURL(fileRef);
     }
   };
 
-  // Add / Edit Transaction
+  // 🌟 SUBMIT TRANSACTION (WITH 3-WAY SPLIT SUPPORT)
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -483,38 +320,79 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         receiptUrl = oldTxData?.receiptUrl || '';
       }
 
-      const txData = {
-        type: formData.type,
-        amount: formData.amount,
-        category: formData.category,
-        description: formData.description,
-        source: formData.source,
-        receiptUrl,
-        date: formData.date,
-        time: formData.time,
-        updatedAt: serverTimestamp(),
-        userId: auth.currentUser?.uid || 'admin',
-        userEmail: auth.currentUser?.email || 'admin@example.com',
-        branchId: selectedBranch || 'branch_1',
-        ...(isEditing && oldTxData?.supplierPriceIds ? { supplierPriceIds: oldTxData.supplierPriceIds } : {}),
-        ...(isEditing && oldTxData?.supplierName ? { supplierName: oldTxData.supplierName } : {})
-      };
+      const branchId = selectedBranch || 'branch_1';
+      const batchGroupId = `split_${Date.now()}`;
 
-      if (isEditing && editingId) {
-        await setDoc(doc(db, 'transactions', editingId), txData, { merge: true });
-        alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດແລ້ວ!' : 'Transaction updated successfully!');
+      // 🌟 IF INCOME AND 3-WAY SPLIT IS ACTIVE
+      if (formData.type === 'income' && is3WaySplit && !isEditing) {
+        const entries: Array<{ amount: number; source: PaymentChannel; label: string }> = [
+          { amount: splitCash, source: 'Cash', label: 'ສ່ວນເງິນສົດ (Cash)' },
+          { amount: splitOnepay, source: 'Onepay', label: 'ສ່ວນ BCEL OnePay' },
+          { amount: splitLDB, source: 'LDB', label: 'ສ່ວນ ທະນາຄານ LDB' }
+        ];
+
+        let savedCount = 0;
+        for (const item of entries) {
+          if (item.amount > 0) {
+            await addDoc(collection(db, 'transactions'), {
+              type: 'income',
+              amount: item.amount,
+              category: formData.category || 'Sales',
+              description: formData.description ? `${formData.description} • ${item.label}` : item.label,
+              source: item.source,
+              receiptUrl,
+              date: formData.date,
+              time: formData.time,
+              batchGroupId,
+              updatedAt: serverTimestamp(),
+              createdAt: serverTimestamp(),
+              userId: auth.currentUser?.uid || 'admin',
+              userEmail: auth.currentUser?.email || 'admin@example.com',
+              branchId
+            });
+            savedCount++;
+          }
+        }
+
+        alert(i18n.language === 'la' 
+          ? `ບັນທຶກລາຍຮັບແຍກ ${savedCount} ຊ່ອງທາງ (${formData.amount.toLocaleString()} ₭) ສຳເລັດແລ້ວ!` 
+          : `Saved ${savedCount} split income channels successfully!`);
       } else {
-        await addDoc(collection(db, 'transactions'), {
-          ...txData,
-          createdAt: serverTimestamp()
-        });
-        alert(i18n.language === 'la' ? 'ບັນທຶກລາຍການສຳເລັດແລ້ວ!' : 'Transaction saved successfully!');
+        // STANDARD SINGLE ENTRY (OR EXPENSE)
+        const txData = {
+          type: formData.type,
+          amount: formData.amount,
+          category: formData.category,
+          description: formData.description,
+          source: formData.source,
+          receiptUrl,
+          date: formData.date,
+          time: formData.time,
+          updatedAt: serverTimestamp(),
+          userId: auth.currentUser?.uid || 'admin',
+          userEmail: auth.currentUser?.email || 'admin@example.com',
+          branchId,
+          ...(isEditing && oldTxData?.supplierPriceIds ? { supplierPriceIds: oldTxData.supplierPriceIds } : {}),
+          ...(isEditing && oldTxData?.supplierName ? { supplierName: oldTxData.supplierName } : {})
+        };
+
+        if (isEditing && editingId) {
+          await setDoc(doc(db, 'transactions', editingId), txData, { merge: true });
+          alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດແລ້ວ!' : 'Transaction updated!');
+        } else {
+          await addDoc(collection(db, 'transactions'), {
+            ...txData,
+            createdAt: serverTimestamp()
+          });
+          alert(i18n.language === 'la' ? 'ບັນທຶກລາຍການສຳເລັດແລ້ວ!' : 'Transaction saved!');
+        }
       }
 
+      // Reset Form
       setFormData({
-        type: 'expense',
+        type: 'income',
         amount: 0,
-        category: 'Purchasing',
+        category: 'Sales',
         description: '',
         source: 'Cash',
         receipt: null,
@@ -522,12 +400,17 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         time: format(new Date(), 'HH:mm')
       });
       setDisplayAmount('');
+      setSplitCash(0);
+      setSplitCashDisplay('');
+      setSplitOnepay(0);
+      setSplitOnepayDisplay('');
+      setSplitLDB(0);
+      setSplitLDBDisplay('');
       setIsEditing(false);
       setEditingId(null);
       setOldTxData(null);
       setDeleteReceipt(false);
     } catch (err: any) {
-      console.error("Save error:", err);
       alert(`Error: ${err.message}`);
     } finally {
       setLoading(false);
@@ -544,7 +427,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     setFormData({
       type: txToEdit.type,
       amount: txToEdit.amount,
-      category: txToEdit.category || 'Purchasing',
+      category: txToEdit.category || 'Sales',
       description: txToEdit.description || '',
       source: normalizePaymentChannel(txToEdit.source),
       receipt: null,
@@ -571,7 +454,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     try {
       setLoading(true);
       await deleteDoc(doc(db, 'transactions', txToDelete.id));
-      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດແລ້ວ!' : 'Transaction deleted successfully!');
+      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດແລ້ວ!' : 'Transaction deleted!');
       setShowDeletePinModal(false);
       setTxToDelete(null);
     } catch (err: any) {
@@ -579,48 +462,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleBankApproved = async () => {
-    try {
-      await addDoc(collection(db, 'transactions'), {
-        type: 'income',
-        amount: bankAmount,
-        category: 'opening_balance',
-        description: `Bank Opening Balance (${bankChannel})`,
-        source: bankChannel,
-        date: todayStr,
-        createdAt: serverTimestamp(),
-        userId: auth.currentUser?.uid || 'admin',
-        userEmail: auth.currentUser?.email || 'admin@example.com',
-        branchId: selectedBranch || 'branch_1'
-      });
-      setShowBankModal(false);
-      setBankAmount(0);
-      alert("Bank Opening Balance Recorded!");
-    } catch (err: any) {
-      handleFirestoreError(err, OperationType.WRITE, 'transactions');
-    }
-  };
-
-  // Export to Excel
-  const handleExport = () => {
-    const headers = ['Date', 'Time', 'Type', 'Amount', 'Category', 'Payment Channel', 'Description', 'User'];
-    const rows = dailyTransactions.map(tx => [
-      tx.date,
-      tx.time || '',
-      tx.type,
-      tx.amount,
-      tx.category,
-      normalizePaymentChannel(tx.source),
-      tx.description || '',
-      tx.userEmail
-    ]);
-
-    const worksheet = utils.aoa_to_sheet([headers, ...rows]);
-    const workbook = utils.book_new();
-    utils.book_append_sheet(workbook, worksheet, 'Financials');
-    writeFile(workbook, `financials_${viewDate}.xlsx`);
   };
 
   return (
@@ -701,18 +542,18 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             {showPrivacy ? '••••••••' : `${Math.round(financialSummary.totalNetLiquidity).toLocaleString()} ₭`}
           </p>
           <p className="text-[9px] text-blue-200/60 font-bold uppercase">
-            Inflow: +{Math.round(financialSummary.totalRevenue).toLocaleString()} | Outflow: -{Math.round(financialSummary.totalExpenses).toLocaleString()}
+            In: +{Math.round(financialSummary.totalRevenue).toLocaleString()} | Out: -{Math.round(financialSummary.totalExpenses).toLocaleString()}
           </p>
         </div>
 
-        {/* Cash In Hand (ເງິນສົດ) */}
+        {/* Cash In Hand */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
               <Wallet className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ເງິນສົດໃນມື (Cash)' : 'Cash Balance'}</span>
             </span>
-            <span className="text-[9px] font-bold px-2 py-0.5 bg-emerald-500/10 text-emerald-600 rounded-md">Cash</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
           </div>
           <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.cashNet).toLocaleString()} ₭`}
@@ -723,14 +564,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* BCEL OnePay (ເງິນໂອນ OnePay) */}
+        {/* BCEL OnePay */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400 flex items-center gap-1.5">
               <CreditCard className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'BCEL OnePay' : 'OnePay Balance'}</span>
             </span>
-            <span className="text-[9px] font-bold px-2 py-0.5 bg-red-500/10 text-red-500 rounded-md">OnePay</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
           </div>
           <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.onepayNet).toLocaleString()} ₭`}
@@ -741,14 +582,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* LDB Bank (ທະນາຄານ LDB) */}
+        {/* LDB Bank */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ທະນາຄານ LDB' : 'LDB Balance'}</span>
             </span>
-            <span className="text-[9px] font-bold px-2 py-0.5 bg-blue-500/10 text-blue-600 rounded-md">LDB</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
           </div>
           <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.ldbNet).toLocaleString()} ₭`}
@@ -761,121 +602,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
       </div>
 
-      {/* ================= 3. EXECUTIVE FINANCIAL REPORT (ROI, Margin, Revenue, Net Profit) ================= */}
-      <div className="bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-4">
-          <div>
-            <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-emerald-500" />
-              <span>{i18n.language === 'la' ? 'ບົດລາຍງານປະສິດທິພາບການເງິນ (Financial KPIs)' : 'Financial KPIs & Performance'}</span>
-            </h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
-              {i18n.language === 'la' 
-                ? 'ຄິດໄລ່ຍອດຂາຍ, ຕົ້ນທຶນວັດຖຸດິບ (Purchasing), ຄ່າດຳເນີນງານ ແລະ ກຳໄລສຸດທິ' 
-                : 'Profitability, Gross Margin, and Estimated ROI Analytics'}
-            </p>
-          </div>
-
-          <span className="px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-mono font-black w-fit">
-            {timeframeMode === 'month' ? '📅 Monthly Performance' : '🌐 All-Time Performance'}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          
-          {/* Total Revenue */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
-              {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Total Revenue'}
-            </span>
-            <p className="text-lg font-black font-mono text-emerald-600 dark:text-emerald-400">
-              {showPrivacy ? '••••••' : `${Math.round(financialSummary.totalRevenue).toLocaleString()} ₭`}
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">Gross Inflows</p>
-          </div>
-
-          {/* Purchasing (COGS) */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
-              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
-            </span>
-            <p className="text-lg font-black font-mono text-red-500 dark:text-red-400">
-              {showPrivacy ? '••••••' : `${Math.round(financialSummary.totalPurchasing).toLocaleString()} ₭`}
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">Material Procurement</p>
-          </div>
-
-          {/* Gross Margin % */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <Percent className="w-3.5 h-3.5 text-blue-500" />
-              {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ (Gross Margin)' : 'Gross Margin'}
-            </span>
-            <p className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
-              {financialSummary.grossMarginPercent.toFixed(1)}%
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">
-              GP: {Math.round(financialSummary.grossProfit).toLocaleString()} ₭
-            </p>
-          </div>
-
-          {/* Net Profit */}
-          <div className={`p-4 rounded-2xl border space-y-1 ${
-            financialSummary.netProfit >= 0 
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
-              : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
-          }`}>
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
-              {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
-            </span>
-            <p className="text-lg font-black font-mono">
-              {showPrivacy ? '••••••' : `${Math.round(financialSummary.netProfit).toLocaleString()} ₭`}
-            </p>
-            <p className="text-[9px] opacity-80 font-medium">Revenue - All Expenses</p>
-          </div>
-
-          {/* Estimated ROI */}
-          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 space-y-1">
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
-              {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI (Est. ROI)' : 'Estimated ROI'}
-            </span>
-            <p className="text-lg font-black font-mono">
-              {financialSummary.estimatedROI.toFixed(1)}%
-            </p>
-            <p className="text-[9px] opacity-80 font-medium">Return on Total Costs</p>
-          </div>
-
-        </div>
-      </div>
-
-      <ApprovalModal 
-        isOpen={showApprovalModal}
-        onClose={() => setShowApprovalModal(false)}
-        onApprove={async () => {
-          if (approvalType === 'bank') await handleBankApproved();
-          setApprovalType(null);
-        }}
-        actionType={approvalType === 'bank' ? 'Bank Sync' : 'Save Transaction'}
-        masterPin={appConfig?.masterApprovalPin}
-      />
-
-      <PinModal
-        isOpen={showEditPinModal}
-        onClose={() => setShowEditPinModal(false)}
-        correctPin={appConfig?.masterApprovalPin}
-        onSuccess={handleEditConfirmed}
-      />
-
-      <PinModal
-        isOpen={showDeletePinModal}
-        onClose={() => setShowDeletePinModal(false)}
-        correctPin={appConfig?.masterApprovalPin}
-        onSuccess={handleDeleteConfirmed}
-      />
-
-      {/* ================= 4. TRANSACTION FORM & SUPPLIER PULL ================= */}
+      {/* ================= 3. TRANSACTION ENTRY FORM (WITH 3-WAY SPLIT) ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
         {/* FORM (5 Cols) */}
@@ -884,24 +611,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
-                <PlusCircle className="w-4 h-4 text-primary" />
-                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit)' : 'ບັນທຶກລາຍການໃໝ່ (New Transaction)'}</span>
+                <PlusCircle className="w-4 h-4 text-emerald-500" />
+                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit)' : 'ບັນທຶກລາຍການ (Transaction Entry)'}</span>
               </h3>
               {isEditing && (
                 <button 
                   onClick={() => {
                     setIsEditing(false);
                     setEditingId(null);
-                    setFormData({
-                      type: 'expense',
-                      amount: 0,
-                      category: 'Purchasing',
-                      description: '',
-                      source: 'Cash',
-                      receipt: null,
-                      date: format(new Date(), 'yyyy-MM-dd'),
-                      time: format(new Date(), 'HH:mm')
-                    });
                     setDisplayAmount('');
                   }}
                   className="text-[9px] font-black text-red-500 uppercase"
@@ -913,21 +630,21 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
             <form onSubmit={handleAddTransaction} className="space-y-4">
               
-              {/* Type Switcher */}
+              {/* Type Switcher: Income vs Expense */}
               <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
                 <button 
                   type="button" 
-                  onClick={() => setFormData({...formData, type: 'expense'})}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-black transition-all ${formData.type === 'expense' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'}`}
-                >
-                  {t('expense')} (ລາຍຈ່າຍ)
-                </button>
-                <button 
-                  type="button" 
-                  onClick={() => setFormData({...formData, type: 'income'})}
+                  onClick={() => setFormData({...formData, type: 'income', category: 'Sales'})}
                   className={`flex-1 py-1.5 rounded-lg text-xs font-black transition-all ${formData.type === 'income' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'}`}
                 >
                   {t('income')} (ລາຍຮັບ)
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => setFormData({...formData, type: 'expense', category: 'Purchasing'})}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-black transition-all ${formData.type === 'expense' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'}`}
+                >
+                  {t('expense')} (ລາຍຈ່າຍ)
                 </button>
               </div>
 
@@ -955,20 +672,93 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </div>
               </div>
 
-              {/* Amount */}
+              {/* Total Amount Input */}
               <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Amount (₭)</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-[9.5px] font-black uppercase text-slate-400">
+                    {i18n.language === 'la' ? 'ຍອດເງິນທັງໝົດ (Total Amount ₭)' : 'Total Amount (₭)'}
+                  </label>
+                  {formData.type === 'income' && (
+                    <span className="text-[9px] font-black text-emerald-500 flex items-center gap-1 uppercase">
+                      <Split className="w-3 h-3" />
+                      Auto-Balancing Split Active
+                    </span>
+                  )}
+                </div>
                 <input 
                   type="text"
                   required
                   placeholder="0"
                   className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-lg font-mono font-black text-slate-800 dark:text-white"
                   value={displayAmount}
-                  onChange={handleAmountChange}
+                  onChange={handleTotalAmountChange}
                 />
               </div>
 
-              {/* Category & Payment Channel */}
+              {/* 🌟 3-WAY SPLIT INCOME SECTION (Cash / OnePay / LDB) */}
+              {formData.type === 'income' && !isEditing && (
+                <div className="p-3.5 bg-emerald-500/5 dark:bg-emerald-500/10 border border-emerald-500/20 rounded-2xl space-y-3 animate-in fade-in duration-200">
+                  <div className="flex justify-between items-center border-b border-emerald-500/10 pb-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                      <span>💵📱🏦</span>
+                      <span>{i18n.language === 'la' ? 'ແບ່ງ 3 ສ່ວນລາຍຮັບ (Auto-Balance)' : '3-Way Split (Auto-Calculated)'}</span>
+                    </span>
+                    <span className="text-[9px] font-mono font-bold text-slate-400">
+                      Sum: {(splitCash + splitOnepay + splitLDB).toLocaleString()} ₭
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {/* 1. Cash Input */}
+                    <div className="space-y-1">
+                      <label className="text-[8.5px] font-black uppercase text-emerald-600 dark:text-emerald-400 block truncate">
+                        1. ເງິນສົດ (Cash)
+                      </label>
+                      <input 
+                        type="text"
+                        placeholder="0"
+                        className="w-full h-9 px-2 rounded-xl bg-white dark:bg-[#073069] border border-emerald-500/20 text-xs font-mono font-bold text-slate-800 dark:text-white"
+                        value={splitCashDisplay}
+                        onChange={e => handleSplitCashChange(e.target.value)}
+                      />
+                    </div>
+
+                    {/* 2. OnePay Input */}
+                    <div className="space-y-1">
+                      <label className="text-[8.5px] font-black uppercase text-red-500 dark:text-red-400 block truncate">
+                        2. BCEL OnePay
+                      </label>
+                      <input 
+                        type="text"
+                        placeholder="0"
+                        className="w-full h-9 px-2 rounded-xl bg-white dark:bg-[#073069] border border-red-500/20 text-xs font-mono font-bold text-slate-800 dark:text-white"
+                        value={splitOnepayDisplay}
+                        onChange={e => handleSplitOnepayChange(e.target.value)}
+                      />
+                    </div>
+
+                    {/* 3. LDB Input (Auto-calculated) */}
+                    <div className="space-y-1">
+                      <label className="text-[8.5px] font-black uppercase text-blue-500 dark:text-blue-400 block truncate">
+                        3. ທະນາຄານ LDB
+                      </label>
+                      <input 
+                        type="text"
+                        placeholder="0"
+                        className="w-full h-9 px-2 rounded-xl bg-white dark:bg-[#073069] border border-blue-500/20 text-xs font-mono font-bold text-slate-800 dark:text-white"
+                        value={splitLDBDisplay}
+                        onChange={e => handleSplitLDBChange(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  
+                  <p className="text-[9px] text-slate-400 italic">
+                    💡 {i18n.language === 'la' ? 'ໃສ່ຍອດລວມ + ປ້ອນ 2 ຊ່ອງ, ຊ່ອງທີ 3 ຈະຄິດໄລ່ຍອດເຫຼືອໃຫ້ອັດຕະໂນມັດ!' : 'Enter total and 2 channels, 3rd channel auto-balances!'}
+                  </p>
+                </div>
+              )}
+
+              {/* Category & Payment Channel (If Expense or Single Mode) */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Category</label>
@@ -978,21 +768,32 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     onChange={e => setFormData({...formData, category: e.target.value})}
                     required
                   >
-                    <option value="Purchasing">🛒 Purchasing (ວັດຖຸດິບ)</option>
-                    <option value="Sales">📈 Sales (ຍອດຂາຍ)</option>
-                    <option value="rent">🏠 Rent (ຄ່າເຊົ່າ)</option>
-                    <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
-                    <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
-                    <option value="admin">💼 Admin (ບໍລິຫານ)</option>
-                    <option value="electricity">⚡ Electricity (ຄ່າໄຟ)</option>
-                    <option value="water">💧 Water (ຄ່ານ້ຳ)</option>
-                    <option value="other">📦 Other (ອື່ນໆ)</option>
+                    {formData.type === 'income' ? (
+                      <>
+                        <option value="Sales">📈 Sales (ຍອດຂາຍປະຈຳວັນ)</option>
+                        <option value="dividends">💰 Dividends (ປັນຜົນ)</option>
+                        <option value="other">📦 Other Income (ອື່ນໆ)</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="Purchasing">🛒 Purchasing (ວັດຖຸດິບ)</option>
+                        <option value="rent">🏠 Rent (ຄ່າເຊົ່າ)</option>
+                        <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
+                        <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
+                        <option value="admin">💼 Admin (ບໍລິຫານ)</option>
+                        <option value="electricity">⚡ Electricity (ຄ່າໄຟ)</option>
+                        <option value="water">💧 Water (ຄ່ານ້ຳ)</option>
+                        <option value="other">📦 Other (ອື່ນໆ)</option>
+                      </>
+                    )}
                   </select>
                 </div>
 
-                {/* Payment Channel: Cash, Onepay, LDB */}
+                {/* Single Channel (Visible when Expense or Editing) */}
                 <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">Payment Channel</label>
+                  <label className="text-[9.5px] font-black uppercase text-slate-400">
+                    {formData.type === 'income' && !isEditing ? 'Default Channel' : 'Paid Via'}
+                  </label>
                   <select 
                     className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white"
                     value={formData.source}
@@ -1007,7 +808,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
               {/* Description */}
               <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Description / Note</label>
+                <label className="text-[9.5px] font-black uppercase text-slate-400">Description / Memo</label>
                 <input 
                   type="text"
                   placeholder="Memo..."
@@ -1017,9 +818,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 />
               </div>
 
-              {/* Receipt Upload */}
+              {/* Receipt */}
               <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Receipt Image</label>
+                <label className="text-[9.5px] font-black uppercase text-slate-400">Receipt Photo</label>
                 <input 
                   type="file"
                   accept="image/*,application/pdf"
@@ -1037,124 +838,23 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               </button>
             </form>
           </div>
-
-          {/* Supplier Pull Purchases Widget */}
-          <div className="high-density-card bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                <span>{i18n.language === 'la' ? 'ດຶງລາຍຈ່າຍຜູ້ສະໜອງ' : 'Pull Supplier Purchases'}</span>
-              </h3>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <input 
-                type="date"
-                value={pullDate}
-                onChange={e => setPullDate(e.target.value)}
-                className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold"
-              />
-              <input 
-                type="date"
-                value={paymentDate}
-                onChange={e => setPaymentDate(e.target.value)}
-                className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-blue-500"
-              />
-            </div>
-
-            <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
-              {supplierBillsForSelectedDate.length === 0 ? (
-                <p className="text-[10px] text-slate-400 font-bold uppercase text-center py-4">No supplier bills for this date</p>
-              ) : (
-                supplierBillsForSelectedDate.map(bill => (
-                  <div key={bill.id} className="p-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-black text-slate-800 dark:text-white">{bill.supplier}</span>
-                      <span className="text-xs font-mono font-black text-slate-800 dark:text-white">
-                        {Math.round(bill.totalPrice).toLocaleString()} ₭
-                      </span>
-                    </div>
-
-                    {!bill.isImported ? (
-                      <div className="flex gap-2 items-center pt-1">
-                        <select 
-                          value={billPaymentSources[bill.id] || 'Onepay'}
-                          onChange={e => setBillPaymentSources({...billPaymentSources, [bill.id]: e.target.value as PaymentChannel})}
-                          className="h-8 px-2 rounded-lg bg-white dark:bg-slate-800 border text-[10px] font-bold"
-                        >
-                          <option value="Onepay">📱 OnePay</option>
-                          <option value="Cash">💵 Cash</option>
-                          <option value="LDB">🏦 LDB</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => handlePullSupplierBill(bill)}
-                          disabled={importingBillId === bill.id}
-                          className="flex-1 h-8 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-[10px] font-black uppercase"
-                        >
-                          {importingBillId === bill.id ? 'Importing...' : 'Pull Expense'}
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-[9px] text-emerald-500 font-black uppercase block">✓ Already Imported</span>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
         </div>
 
         {/* FEED & TABLE (7 Cols) */}
         <div className="xl:col-span-7 space-y-6">
 
-          {/* Weekly Chart */}
-          <div className="high-density-card p-0 flex flex-col overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
-            <div className="p-3.5 border-b border-slate-100 dark:border-white/5 flex justify-between items-center">
-              <h4 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
-                <BarChart3 className="w-3.5 h-3.5 text-primary" />
-                <span>Weekly Inflows & Outflows</span>
-              </h4>
-            </div>
-            <div className="p-4 h-[160px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={weeklyData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.5} />
-                  <XAxis dataKey="date" tick={{fontSize: 9}} tickFormatter={(val) => format(new Date(val), 'dd/MM')} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', color: '#fff' }}
-                    formatter={(val: number) => [`${val.toLocaleString()} ₭`, '']}
-                  />
-                  <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} name="Inflow" />
-                  <Bar dataKey="expenses" fill="#ef4444" radius={[4, 4, 0, 0]} name="Outflow" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
           {/* Transactions Ledger */}
-          <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
+          <div className="high-density-card p-0 flex flex-col min-h-[550px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
             <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-wrap justify-between items-center gap-2">
               <div className="flex items-center gap-2">
                 <input 
-                  type="date"
+                  type="date" 
                   value={viewDate}
                   onChange={e => setViewDate(e.target.value)}
                   className="text-xs font-bold bg-transparent outline-none cursor-pointer text-slate-800 dark:text-white"
                 />
                 <span className="text-[10px] text-slate-400 font-bold uppercase">({dailyTransactions.length} logs)</span>
-              </div>
-
-              <div className="flex gap-2">
-                <button 
-                  onClick={handleExport}
-                  className="px-3 py-1 bg-slate-100 dark:bg-white/10 rounded-xl text-[10px] font-black uppercase text-blue-500 flex items-center gap-1"
-                >
-                  <Download className="w-3 h-3" />
-                  Excel
-                </button>
               </div>
             </div>
 
@@ -1217,6 +917,20 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         </div>
 
       </div>
+
+      <PinModal
+        isOpen={showEditPinModal}
+        onClose={() => setShowEditPinModal(false)}
+        correctPin={appConfig?.masterApprovalPin}
+        onSuccess={handleEditConfirmed}
+      />
+
+      <PinModal
+        isOpen={showDeletePinModal}
+        onClose={() => setShowDeletePinModal(false)}
+        correctPin={appConfig?.masterApprovalPin}
+        onSuccess={handleDeleteConfirmed}
+      />
 
     </div>
   );
