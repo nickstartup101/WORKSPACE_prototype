@@ -8,7 +8,7 @@ import {
   Plus, Trash2, X, Search, Download, 
   Receipt, Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
   Building2, ArrowUpRight, ArrowDownRight, CheckCircle2,
-  Check, Archive, FileText
+  Check, Archive, FileText, UserPlus, ChevronDown
 } from 'lucide-react';
 import { format, isPast, parseISO } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
@@ -17,11 +17,14 @@ import { useTranslation } from 'react-i18next';
 export type DebtType = 'payable' | 'receivable'; 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
+const PRESET_CREDITORS = ['CHANHOM', 'LATDA', 'HEAVENLY', 'DMART', 'MARRY ANN'];
+
 export default function DebtLedger({ selectedBranch }: { selectedBranch?: string }) {
   const { i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [debts, setDebts] = useState<any[]>([]);
+  const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'all' | 'payable' | 'receivable'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,9 +41,13 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
 
+  // 🌟 Dropdown Creditor State ('OTHER' means custom input)
+  const [selectedCreditorPreset, setSelectedCreditorPreset] = useState<string>('CHANHOM');
+  const [customPartyName, setCustomPartyName] = useState<string>('');
+
   const [formData, setFormData] = useState({
     type: 'payable' as DebtType,
-    partyName: '',
+    partyName: 'CHANHOM',
     partyPhone: '',
     invoiceNo: '',
     amount: 0,
@@ -59,7 +66,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     return Number(clean).toLocaleString();
   };
 
-  // Clipboard image paste support
+  // Clipboard paste support
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -82,12 +89,11 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     return () => window.removeEventListener('paste', handlePaste);
   }, []);
 
-  // Listen to Firestore Debts
+  // Listen to Firestore Debts & Supplier Prices
   useEffect(() => {
     const branch = selectedBranch || 'branch_1';
-    const qDebts = query(collection(db, 'debts'), orderBy('dueDate', 'asc'));
 
-    const unsubscribe = onSnapshot(qDebts, (snap) => {
+    const unsubDebts = onSnapshot(query(collection(db, 'debts'), orderBy('dueDate', 'asc')), (snap) => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setDebts(all.filter((d: any) => (d.branchId || 'branch_1') === branch));
       setLoading(false);
@@ -96,8 +102,31 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    const unsubSuppliers = onSnapshot(collection(db, 'supplierPrices'), (snap) => {
+      setSupplierPrices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, () => {});
+
+    return () => {
+      unsubDebts();
+      unsubSuppliers();
+    };
   }, [selectedBranch]);
+
+  // Combined Unique Creditors List for Dropdown
+  const creditorOptions = useMemo(() => {
+    const set = new Set<string>(PRESET_CREDITORS);
+    supplierPrices.forEach(p => {
+      if (p.supplier && p.supplier.trim() && p.supplier.toUpperCase() !== 'OTHER') {
+        set.add(p.supplier.trim().toUpperCase());
+      }
+    });
+    debts.forEach(d => {
+      if (d.type === 'payable' && d.partyName && d.partyName.trim()) {
+        set.add(d.partyName.trim());
+      }
+    });
+    return Array.from(set);
+  }, [supplierPrices, debts]);
 
   const compressAndSetImage = (base64Str: string) => {
     const img = new Image();
@@ -145,8 +174,19 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
 
   const handleSaveDebt = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.partyName.trim() || formData.amount <= 0) {
-      alert(i18n.language === 'la' ? 'ກະລຸນາໃສ່ຊື່ ແລະ ຈຳນວນເງິນໃຫ້ຖືກຕ້ອງ' : 'Please fill all required fields');
+
+    // Determine final party name
+    let finalPartyName = formData.partyName;
+    if (formData.type === 'payable') {
+      if (selectedCreditorPreset === 'OTHER') {
+        finalPartyName = customPartyName.trim();
+      } else {
+        finalPartyName = selectedCreditorPreset;
+      }
+    }
+
+    if (!finalPartyName || formData.amount <= 0) {
+      alert(i18n.language === 'la' ? 'ກະລຸນາໃສ່ຊື່ເຈົ້າໜີ້/ລູກໜີ້ ແລະ ຈຳນວນເງິນໃຫ້ຖືກຕ້ອງ' : 'Please provide party name and amount');
       return;
     }
 
@@ -156,6 +196,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
 
       const debtData = {
         ...formData,
+        partyName: finalPartyName,
         branchId,
         status: 'pending',
         updatedAt: serverTimestamp(),
@@ -174,9 +215,11 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
 
       setShowAddForm(false);
       setEditingDebtId(null);
+      setCustomPartyName('');
+      setSelectedCreditorPreset('CHANHOM');
       setFormData({
         type: 'payable',
-        partyName: '',
+        partyName: 'CHANHOM',
         partyPhone: '',
         invoiceNo: '',
         amount: 0,
@@ -194,7 +237,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     }
   };
 
-  // 🌟 ແບບທີ 1: ຊຳລະ & SYNC ເຂົ້າ FINANCE (ລາຍຮັບ/ລາຍຈ່າຍ)
+  // Settle with Finance Sync
   const handleExecuteSettlementWithFinance = async () => {
     if (!settlingDebt) return;
     try {
@@ -247,7 +290,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
     }
   };
 
-  // 🌟 ແບບທີ 2: ARCHIVE / ປິດໜີ້ເທົ່ານັ້ນ (ບໍ່ດຶງເຂົ້າ FINANCE - ສຳລັບ REMINDER INVOICE / ຢືມເງິນພາຍໃນ)
+  // Settle Archive Only (No Finance Sync)
   const handleArchiveWithoutFinance = async () => {
     if (!settlingDebt) return;
     try {
@@ -338,6 +381,8 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
             type="button"
             onClick={() => {
               setEditingDebtId(null);
+              setSelectedCreditorPreset('CHANHOM');
+              setCustomPartyName('');
               setShowAddForm(true);
             }}
             className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md cursor-pointer"
@@ -453,7 +498,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                       : 'border-slate-200/80 dark:border-white/10'
                 }`}
               >
-                {/* Header */}
                 <div className="flex justify-between items-start">
                   <div>
                     <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
@@ -480,7 +524,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                   </span>
                 </div>
 
-                {/* Amount */}
                 <div className="p-3.5 bg-slate-50 dark:bg-black/20 rounded-2xl border border-slate-100 dark:border-white/5 flex justify-between items-center">
                   <div>
                     <span className="text-[9px] font-black uppercase text-slate-400 block">
@@ -495,7 +538,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                     <button
                       type="button"
                       onClick={() => setPreviewImageUrl(debt.invoiceBase64)}
-                      className="p-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-xl transition-all flex items-center gap-1 text-[9px] font-black uppercase"
+                      className="p-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-xl transition-all flex items-center gap-1 text-[9px] font-black uppercase cursor-pointer"
                       title="View Invoice"
                     >
                       <ImageIcon className="w-4 h-4" />
@@ -504,7 +547,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                   )}
                 </div>
 
-                {/* Dates & Category */}
                 <div className="space-y-1.5 text-[10px] text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-white/5 pt-3 font-medium">
                   <div className="flex justify-between">
                     <span>ວັນທີອອກບິນ:</span>
@@ -524,7 +566,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                   )}
                 </div>
 
-                {/* Action Buttons */}
                 <div className="pt-2 flex items-center gap-2">
                   {!isSettled ? (
                     <button
@@ -560,7 +601,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
           })}
       </div>
 
-      {/* Modal: New Debt */}
+      {/* 🌟 MODAL: LOG NEW DEBT (WITH DROPDOWN + OTHER CUSTOM INPUT) */}
       {showAddForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-lg rounded-[2.5rem] p-6 sm:p-8 shadow-2xl border border-white/10 space-y-5 max-h-[90vh] overflow-y-auto">
@@ -576,6 +617,8 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
             </div>
 
             <form onSubmit={handleSaveDebt} className="space-y-4">
+              
+              {/* Type Switcher: Payable vs Receivable */}
               <div className="space-y-1">
                 <label className="text-[9.5px] font-black uppercase text-slate-400">ປະເພດໜີ້ (Debt Type)</label>
                 <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
@@ -600,21 +643,62 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* 🌟 PARTY NAME: DROPDOWN FOR CREDITOR + 'OTHER' OPTION */}
+              {formData.type === 'payable' ? (
+                <div className="space-y-2 p-3.5 bg-slate-50 dark:bg-black/20 rounded-2xl border border-slate-200/60 dark:border-white/5">
+                  <div className="space-y-1">
+                    <label className="text-[9.5px] font-black uppercase text-slate-400">
+                      {i18n.language === 'la' ? 'ເລືອກເຈົ້າໜີ້ / ຜູ້ສະໜອງ' : 'Select Creditor / Supplier'}
+                    </label>
+                    <select
+                      className="w-full h-11 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
+                      value={selectedCreditorPreset}
+                      onChange={e => setSelectedCreditorPreset(e.target.value)}
+                    >
+                      {creditorOptions.map(sup => (
+                        <option key={sup} value={sup}>{sup}</option>
+                      ))}
+                      <option value="OTHER">➕ ອື່ນໆ (Other - ລະບຸຊື່ໃໝ່ເອງ)</option>
+                    </select>
+                  </div>
+
+                  {/* 🌟 SHOW CUSTOM TEXT INPUT IF 'OTHER' IS SELECTED */}
+                  {selectedCreditorPreset === 'OTHER' && (
+                    <div className="space-y-1 animate-in fade-in duration-200 pt-1">
+                      <label className="text-[9.5px] font-black uppercase text-amber-500">
+                        {i18n.language === 'la' ? 'ລະບຸຊື່ເຈົ້າໜີ້ (Custom Creditor Name)' : 'Specify Creditor Name'}
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. ບໍລິສັດ ກ, ຮ້ານ ຂ..."
+                        className="w-full h-10 px-3 rounded-xl bg-white dark:bg-[#073069] border border-amber-400 text-xs font-bold text-slate-800 dark:text-white outline-none"
+                        value={customPartyName}
+                        onChange={e => setCustomPartyName(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* RECEIVABLE / DEBTOR INPUT */
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">
-                    {formData.type === 'payable' ? 'ຊື່ເຈົ້າໜີ້ / ຮ້ານຄ້າ' : 'ຊື່ລູກໜີ້ / ຜູ້ຢືມ'}
+                    {i18n.language === 'la' ? 'ຊື່ລູກໜີ້ / ຜູ້ຢືມເງິນ' : 'Debtor / Borrower Name'}
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. ຮ້ານ Latda, ພະນັກງານ A..."
+                    placeholder="e.g. ທ້າວ ສົມພອນ, ລູກຄ້າ VIP..."
                     className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
                     value={formData.partyName}
                     onChange={e => setFormData({ ...formData, partyName: e.target.value })}
                   />
                 </div>
+              )}
 
+              {/* Phone & Invoice No */}
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">ເບີໂທລະສັບ (Phone)</label>
                   <input
@@ -623,26 +707,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                     className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
                     value={formData.partyPhone}
                     onChange={e => setFormData({ ...formData, partyPhone: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-[9.5px] font-black uppercase text-slate-400">ຈຳນວນເງິນ (Amount ₭)</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="0"
-                    className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base font-mono font-black outline-none text-slate-800 dark:text-white"
-                    value={displayAmount}
-                    onChange={e => {
-                      const clean = e.target.value.replace(/,/g, '');
-                      if (clean === '' || !isNaN(Number(clean))) {
-                        setDisplayAmount(formatWithCommas(clean));
-                        setFormData({ ...formData, amount: Number(clean) || 0 });
-                      }
-                    }}
                   />
                 </div>
 
@@ -658,6 +722,26 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
+              {/* Amount */}
+              <div className="space-y-1">
+                <label className="text-[9.5px] font-black uppercase text-slate-400">ຈຳນວນເງິນ (Amount ₭)</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="0"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base font-mono font-black outline-none text-slate-800 dark:text-white"
+                  value={displayAmount}
+                  onChange={e => {
+                    const clean = e.target.value.replace(/,/g, '');
+                    if (clean === '' || !isNaN(Number(clean))) {
+                      setDisplayAmount(formatWithCommas(clean));
+                      setFormData({ ...formData, amount: Number(clean) || 0 });
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Dates */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">ວັນທີອອກບິນ</label>
@@ -682,6 +766,24 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
                 </div>
               </div>
 
+              {/* Category */}
+              <div className="space-y-1">
+                <label className="text-[9.5px] font-black uppercase text-slate-400">ໝວດໝູ່ (Category)</label>
+                <select
+                  className="w-full h-10 px-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold outline-none text-slate-800 dark:text-white"
+                  value={formData.category}
+                  onChange={e => setFormData({ ...formData, category: e.target.value })}
+                >
+                  <option value="Purchasing">🛒 Purchasing (ຊື້ວັດຖຸດິບ)</option>
+                  <option value="Sales">📈 Sales (ຍອດຂາຍ)</option>
+                  <option value="rental">🏠 Rental (ຄ່າເຊົ່າ)</option>
+                  <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
+                  <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
+                  <option value="other">📦 Other (ອື່ນໆ)</option>
+                </select>
+              </div>
+
+              {/* Invoice Image */}
               <div className="space-y-2 p-3 bg-slate-50 dark:bg-black/20 rounded-2xl border border-dashed border-slate-300 dark:border-white/10">
                 <div className="flex justify-between items-center">
                   <span className="text-[9.5px] font-black uppercase text-slate-500 flex items-center gap-1">
@@ -736,7 +838,7 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
         </div>
       )}
 
-      {/* 🌟 MODAL: 2 OPTIONS SETTLEMENT (SYNC TO FINANCE OR ARCHIVE AS REMINDER) */}
+      {/* Modal: Settlement Actions */}
       {settlingDebt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
           <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-[2.5rem] p-6 sm:p-8 shadow-2xl border border-white/10 space-y-5">
@@ -779,7 +881,6 @@ export default function DebtLedger({ selectedBranch }: { selectedBranch?: string
               </select>
             </div>
 
-            {/* 🌟 2 ACTION BUTTONS: SYNC FINANCE OR ARCHIVE AS REMINDER ONLY */}
             <div className="space-y-2 pt-2">
               <button
                 type="button"
