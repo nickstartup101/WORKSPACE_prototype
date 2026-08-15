@@ -1,22 +1,20 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { useState, useEffect, useMemo } from 'react';
+import { motion } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  AreaChart, Area, PieChart as RechartsPie, Pie, Cell
+  AreaChart, Area
 } from 'recharts';
 import { 
-  RefreshCcw, TrendingUp, Activity, Zap, Triangle, History, BrainCircuit, 
-  Loader2, X, Search, ChevronRight, Package, ArrowUpDown, Sliders, AlertTriangle,
-  Database, CloudLightning, DatabaseZap, CheckCircle2, ArrowRightLeft, Sparkles,
-  Wallet, CreditCard, Building2, DollarSign, Calendar, Filter, Percent,
-  ArrowUpRight, ArrowDownRight, Tag, AlertCircle, ShoppingCart, Layers
+  TrendingUp, Activity, BrainCircuit, Loader2, X, Search, 
+  ChevronRight, Package, Sparkles, Wallet, CreditCard, 
+  Building2, DollarSign, Calendar, Filter, Percent,
+  ArrowUpRight, ArrowDownRight, CheckCircle2, History, AlertCircle
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { format, subDays, parseISO, isSameDay, isSameMonth } from 'date-fns';
-import axios from 'axios';
+import { format, subDays, parseISO, isSameMonth } from 'date-fns';
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, query, onSnapshot, addDoc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 
 interface DashboardProps {
   userSettings: any;
@@ -41,7 +39,6 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
 
   // Modal States
   const [showInventoryModal, setShowInventoryModal] = useState(false);
-  const [showMovementsModal, setShowMovementsModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Subscribe to all collections real-time
@@ -95,7 +92,6 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
     };
   }, []);
 
-  // Helper normalizer for payment sources
   const normalizePayment = (src?: string): 'Cash' | 'Onepay' | 'LDB' => {
     if (!src) return 'Cash';
     const s = src.toLowerCase();
@@ -104,12 +100,11 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
     return 'Cash';
   };
 
-  // ================= 📊 1. FINANCIAL KPIS & PAYMENT LIQUIDITY CALCULATION =================
+  // ================= 📊 FINANCIAL KPIS & PAYMENT CALCULATION =================
   const financialOverview = useMemo(() => {
     const now = new Date();
     const branchId = selectedBranch || 'branch_1';
 
-    // Filter transactions by branch and timeframe
     const activeTxList = fsTransactions.filter(tx => {
       const txBranch = tx.branchId || 'branch_1';
       if (txBranch !== branchId) return false;
@@ -135,9 +130,6 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
     let ldbIncome = 0;
     let ldbExpense = 0;
 
-    // Categories breakdown
-    const categoryTotals: { [key: string]: number } = {};
-
     activeTxList.forEach(tx => {
       const amt = Number(tx.amount) || 0;
       const ch = normalizePayment(tx.source);
@@ -157,8 +149,6 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
         } else {
           totalOPEX += amt;
         }
-
-        categoryTotals[cat] = (categoryTotals[cat] || 0) + amt;
 
         if (ch === 'Cash') cashExpense += amt;
         else if (ch === 'Onepay') onepayExpense += amt;
@@ -221,18 +211,16 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
       ldbExpense,
       ldbNet,
       totalNetLiquidity,
-      categoryTotals,
       trends7Days,
       transactionCount: activeTxList.length
     };
   }, [fsTransactions, timeframeMode, selectedBranch]);
 
-  // ================= 📦 2. INVENTORY HEALTH & BALANCES CALCULATION =================
+  // ================= 📦 INVENTORY HEALTH CALCULATION =================
   const inventoryOverview = useMemo(() => {
     if (fsProducts.length === 0) return { stockHealth: [], lowStockCount: 0, totalProducts: 0 };
 
     const healthList = fsProducts.map(prod => {
-      // Calculate Stock IN
       const inPrices = fsSupplierPrices.filter(sp => sp.productId === prod.id);
       const totalBought = inPrices.reduce((sum, sp) => {
         const qty = Number(sp.quantity) || 0;
@@ -240,11 +228,9 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
         return sum + (qty * subQty);
       }, 0);
 
-      // Adjustments
       const adjs = fsAdjustments.filter(adj => adj.productId === prod.id);
       const adjTotal = adjs.reduce((sum, adj) => sum + (Number(adj.amount) || 0), 0);
 
-      // Sales Outflow
       let totalSoldUnits = 0;
       fsMenuSales.forEach(sale => {
         const itemsSold = sale.itemsSold || {};
@@ -286,92 +272,66 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
     };
   }, [fsProducts, fsSupplierPrices, fsAdjustments, fsMenuSales, fsRecipes]);
 
-  // ================= 💡 3. EXECUTIVE SMART INSIGHTS & AUDIT ALERTS =================
+  // ================= 💡 SMART INSIGHTS =================
   const smartInsights = useMemo(() => {
-    const list: Array<{ id: string; titleLa: string; titleEn: string; descLa: string; descEn: string; type: 'warning' | 'success' | 'info' }> = [];
+    const list: Array<{ id: string; title: string; desc: string; type: 'warning' | 'success' | 'info' }> = [];
 
-    // 1. Profitability Insight
+    // Profitability
     if (financialOverview.totalRevenue > 0) {
       if (financialOverview.netProfit > 0 && financialOverview.grossMarginPercent >= 40) {
         list.push({
           id: 'profit-strong',
-          titleLa: 'ອັດຕາກຳໄລຂັ້ນຕົ້ນແຂງແກ່ນ',
-          titleEn: 'Strong Profit Margin',
-          descLa: `ທຸລະກິດມີ Gross Margin ສູງເຖິງ ${financialOverview.grossMarginPercent.toFixed(1)}% ແລະ ສ້າງກຳໄລສຸດທິ ${Math.round(financialOverview.netProfit).toLocaleString()} ₭.`,
-          descEn: `Healthy Gross Margin of ${financialOverview.grossMarginPercent.toFixed(1)}% yielding ${Math.round(financialOverview.netProfit).toLocaleString()} ₭ Net Profit.`,
+          title: i18n.language === 'la' ? 'ກຳໄລຂັ້ນຕົ້ນແຂງແກ່ນ (Strong Margin)' : 'Healthy Profit Margin',
+          desc: i18n.language === 'la' 
+            ? `Gross Margin ສູງເຖິງ ${financialOverview.grossMarginPercent.toFixed(1)}% ແລະ ສ້າງກຳໄລສຸດທິ ${Math.round(financialOverview.netProfit).toLocaleString()} ₭.` 
+            : `Gross Margin at ${financialOverview.grossMarginPercent.toFixed(1)}% delivering ${Math.round(financialOverview.netProfit).toLocaleString()} ₭ Net Profit.`,
           type: 'success'
         });
       } else if (financialOverview.netProfit < 0) {
         list.push({
           id: 'profit-loss',
-          titleLa: 'ແຈ້ງເຕືອນລາຍຈ່າຍເກີນຍອດຂາຍ',
-          titleEn: 'Operating Deficit Alert',
-          descLa: `ລາຍຈ່າຍລວມສູງກວ່າຍອດຂາຍ ${Math.abs(Math.round(financialOverview.netProfit)).toLocaleString()} ₭. ຄວນກວດສອບຕົ້ນທຶນການຈັດຊື້ ແລະ ຕັດລາຍຈ່າຍບໍລິຫານ.`,
-          descEn: `Total expenses exceed inflows by ${Math.abs(Math.round(financialOverview.netProfit)).toLocaleString()} ₭. Review purchasing rates and non-essential OPEX.`,
+          title: i18n.language === 'la' ? 'ແຈ້ງເຕືອນລາຍຈ່າຍເກີນຍອດຂາຍ' : 'Expense Overrun Alert',
+          desc: i18n.language === 'la'
+            ? `ລາຍຈ່າຍລວມສູງກວ່າຍອດຂາຍ ${Math.abs(Math.round(financialOverview.netProfit)).toLocaleString()} ₭. ແນະນຳໃຫ້ກວດສອບຕົ້ນທຶນຈັດຊື້.`
+            : `Total costs exceed revenue by ${Math.abs(Math.round(financialOverview.netProfit)).toLocaleString()} ₭. Review purchasing ledger.`,
           type: 'warning'
         });
       }
     }
 
-    // 2. Low Stock Inventory Alert
+    // Stock Alert
     if (inventoryOverview.lowStockCount > 0) {
       list.push({
         id: 'low-stock-alert',
-        titleLa: `ພົບສິນຄ້າໃກ້ໝົດສະຕັອກ ${inventoryOverview.lowStockCount} ລາຍການ`,
-        titleEn: `${inventoryOverview.lowStockCount} Items Below Safety Stock`,
-        descLa: 'ມີວັດຖຸດິບຫຼັກຫຼຸດລະດັບ Min Stock, ແນະນຳໃຫ້ກວດສອບແຖບ Suppliers ເພື່ອຈັດຊື້ເຂົ້າສາງດ່ວນ.',
-        descEn: 'Core stock reaching minimum limits. Head to Suppliers tab to schedule replenishment batches.',
+        title: i18n.language === 'la' ? `ສິນຄ້າໃກ້ໝົດສະຕັອກ (${inventoryOverview.lowStockCount} ລາຍການ)` : `${inventoryOverview.lowStockCount} Items Low in Stock`,
+        desc: i18n.language === 'la'
+          ? 'ມີວັດຖຸດິບຫຼັກຫຼຸດລະດັບ Min Stock, ແນະນຳໃຫ້ກວດສອບແຖບ Suppliers ເພື່ອຈັດຊື້ດ່ວນ.'
+          : 'Essential ingredients below safety levels. Restock soon from Suppliers tab.',
         type: 'warning'
       });
     }
 
-    // 3. Payment Method Dominance Insight
-    const onepayRatio = financialOverview.totalRevenue > 0 ? (financialOverview.onepayIncome / financialOverview.totalRevenue) * 100 : 0;
-    if (onepayRatio > 50) {
-      list.push({
-        id: 'onepay-dominance',
-        titleLa: 'ການຊຳລະຜ່ານ BCEL OnePay ກວມເອົາສ່ວນໃຫຍ່',
-        titleEn: 'High Digital QR Adoption',
-        descLa: `ລູກຄ້າຊຳລະຜ່ານ BCEL OnePay ເຖິງ ${onepayRatio.toFixed(0)}% ຂອງຍອດຂາຍທັງໝົດ, ຊ່ວຍຫຼຸດຄວາມສ່ຽງໃນການຖືເງິນສົດ.`,
-        descEn: `OnePay digital transfers account for ${onepayRatio.toFixed(0)}% of customer inflows, ensuring prompt ledger transparency.`,
-        type: 'info'
-      });
-    }
-
-    // 4. Procurement & COGS Ratio
-    const cogsRatio = financialOverview.totalRevenue > 0 ? (financialOverview.totalPurchasing / financialOverview.totalRevenue) * 100 : 0;
-    if (cogsRatio > 0 && cogsRatio <= 40) {
-      list.push({
-        id: 'cogs-healthy',
-        titleLa: 'ຕົ້ນທຶນວັດຖຸດິບ (COGS) ຢູ່ໃນເກນມາດຕະຖານ',
-        titleEn: 'Optimal COGS Ratio',
-        descLa: `ຕົ້ນທຶນການຈັດຊື້ກວມເອົາ ${cogsRatio.toFixed(1)}% ຂອງຍອດຂາຍ (ມາດຕະຖານຄາເຟ: 30-40%).`,
-        descEn: `Raw material purchasing represents ${cogsRatio.toFixed(1)}% of revenue (Industry Target: 30-40%).`,
-        type: 'success'
-      });
-    }
-
-    // Fallback default info insight
+    // Default status
     if (list.length === 0) {
       list.push({
         id: 'system-ready',
-        titleLa: 'ລະບົບ Real-time ເຊື່ອມຕໍ່ສົມບູນ',
-        titleEn: 'Real-time System Ready',
-        descLa: 'ທຸກທຸລະກຳທາງການເງິນ ແລະ ການເຄື່ອນໄຫວສາງສິນຄ້າຖືກ Sync ກັບ Cloud Database ຢ່າງປອດໄພ.',
-        descEn: 'All financials and inventory data movements are continuously synchronized with Cloud Firestore.',
+        title: i18n.language === 'la' ? 'ລະບົບພ້ອມໃຊ້ງານ ແລະ ເຊື່ອມຕໍ່ Cloud 100%' : 'All Systems Fully Synced',
+        desc: i18n.language === 'la'
+          ? 'ທຸກທຸລະກຳ ແລະ ສະຕັອກສິນຄ້າຖືກບັນທຶກ ແລະ ຄິດໄລ່ແບບ Real-time ປອດໄພ.'
+          : 'All transaction streams and stock movements are synchronized in real time.',
         type: 'info'
       });
     }
 
     return list;
-  }, [financialOverview, inventoryOverview]);
+  }, [financialOverview, inventoryOverview, i18n.language]);
 
   if (fsLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-20">
+      <div className="flex flex-col items-center justify-center min-h-[50vh]">
         <Loader2 className="w-10 h-10 text-primary animate-spin" />
         <p className="text-xs font-bold text-slate-400 uppercase mt-4 tracking-widest">
-          {i18n.language === 'la' ? 'ກຳລັງໂຫຼດຂໍ້ມູນ Real-time Dashboard...' : 'Loading Live Executive Dashboard...'}
+          {i18n.language === 'la' ? 'ກຳລັງໂຫຼດຂໍ້ມູນ Real-time Dashboard...' : 'Loading Executive Dashboard...'}
         </p>
       </div>
     );
@@ -380,227 +340,250 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
   return (
     <div className="space-y-6">
 
-      {/* ================= 1. TOP HEADER & TIMEFRAME SELECTOR ================= */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-primary/10 text-primary rounded-2xl">
-            <BrainCircuit className="w-5 h-5 animate-pulse" />
+      {/* ================= 1. CLEAN TOP HEADER & TIMEFRAME TOGGLE ================= */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
+            <BrainCircuit className="w-6 h-6 animate-pulse" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white">
-                {i18n.language === 'la' ? 'ພາບລວມລະບົບ & ບົດສະຫຼຸບຜູ້ບໍລິຫານ' : 'Executive Business Dashboard'}
+              <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">
+                {i18n.language === 'la' ? 'ພາບລວມລະບົບ (Executive Dashboard)' : 'Executive Business Hub'}
               </h2>
-              <span className="text-[8.5px] font-black uppercase px-2 py-0.5 rounded bg-blue-500/10 text-blue-500 border border-blue-500/20">
+              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
                 {(selectedBranch || 'branch_1') === 'branch_1' ? (i18n.language === 'la' ? 'ສາຂາ 1' : 'Branch 1') : (i18n.language === 'la' ? 'ສາຂາ 2' : 'Branch 2')}
               </span>
             </div>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+            <p className="text-[11px] text-slate-400 font-bold mt-0.5">
               {timeframeMode === 'month' 
-                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${format(new Date(), 'MMMM yyyy')})`)
-                : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time)' : 'Viewing: All-Time Overall Ledger')}
+                ? (i18n.language === 'la' ? `ສະແດງສະເພາະ: ເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: This Month (${format(new Date(), 'MMMM yyyy')})`)
+                : (i18n.language === 'la' ? 'ສະແດງ: ຍອດລວມທັງໝົດ (All-Time Data)' : 'Viewing: All-Time Overall Ledger')}
             </p>
           </div>
         </div>
 
         {/* Timeframe Switcher */}
         <div className="flex items-center gap-2 self-start sm:self-auto">
-          <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
+          <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200/80 dark:border-white/10">
             <button
               type="button"
               onClick={() => setTimeframeMode('month')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+              className={`px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
                 timeframeMode === 'month'
                   ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
               }`}
             >
               <Calendar className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ພາຍໃນເດືອນນີ້' : 'This Month'}</span>
+              <span>{i18n.language === 'la' ? 'ເດືອນນີ້' : 'This Month'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setTimeframeMode('all')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+              className={`px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
                 timeframeMode === 'all'
                   ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
               }`}
             >
               <Filter className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ຍອດລວມທັງໝົດ' : 'All-Time'}</span>
+              <span>{i18n.language === 'la' ? 'ທັງໝົດ' : 'All-Time'}</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* ================= 2. EXECUTIVE FINANCIAL KPIS ================= */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      {/* ================= 2. HERO BENTO ROW (GRAND TOTAL + 4 KPIS) ================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         
-        {/* Total Revenue */}
-        <div className="bg-white dark:bg-[#073069] p-4 sm:p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-1">
-          <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
-            <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
-            {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Total Revenue'}
-          </span>
-          <p className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
-            {Math.round(financialOverview.totalRevenue).toLocaleString()} ₭
-          </p>
-          <p className="text-[9px] text-slate-400 font-bold uppercase">
-            {financialOverview.transactionCount} Transactions
-          </p>
-        </div>
+        {/* LEFT: GRAND NET CASHFLOW HERO CARD (5 Cols) */}
+        <div className="lg:col-span-5 bg-gradient-to-br from-[#052659] via-[#073069] to-[#0b3c7e] text-white p-7 rounded-[2.5rem] shadow-xl relative overflow-hidden flex flex-col justify-between">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-blue-400/10 rounded-full -mr-16 -mt-16 blur-2xl pointer-events-none"></div>
 
-        {/* COGS Purchasing */}
-        <div className="bg-white dark:bg-[#073069] p-4 sm:p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-1">
-          <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
-            <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
-            {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
-          </span>
-          <p className="text-xl font-black font-mono text-red-500 dark:text-red-400">
-            {Math.round(financialOverview.totalPurchasing).toLocaleString()} ₭
-          </p>
-          <p className="text-[9px] text-slate-400 font-bold uppercase">
-            OPEX: {Math.round(financialOverview.totalOPEX).toLocaleString()} ₭
-          </p>
-        </div>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-[#7eb3ea]">
+                {i18n.language === 'la' ? 'ຍອດເງິນຄົງເຫຼືອລວມທັງໝົດ' : 'Net Liquidity Balance'}
+              </span>
+              <span className="px-2.5 py-1 rounded-full bg-white/10 text-[9px] font-mono font-bold">
+                {financialOverview.transactionCount} Tx
+              </span>
+            </div>
 
-        {/* Gross Margin % */}
-        <div className="bg-white dark:bg-[#073069] p-4 sm:p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-1">
-          <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
-            <Percent className="w-3.5 h-3.5 text-blue-500" />
-            {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ' : 'Gross Margin'}
-          </span>
-          <p className="text-xl font-black font-mono text-blue-600 dark:text-blue-400">
-            {financialOverview.grossMarginPercent.toFixed(1)}%
-          </p>
-          <p className="text-[9px] text-slate-400 font-bold uppercase">
-            GP: {Math.round(financialOverview.grossProfit).toLocaleString()} ₭
-          </p>
-        </div>
-
-        {/* Net Profit */}
-        <div className={`p-4 sm:p-5 rounded-3xl border space-y-1 ${
-          financialOverview.netProfit >= 0 
-            ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400' 
-            : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
-        }`}>
-          <span className="text-[9.5px] font-black uppercase block">
-            {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
-          </span>
-          <p className="text-xl font-black font-mono">
-            {Math.round(financialOverview.netProfit).toLocaleString()} ₭
-          </p>
-          <p className="text-[9px] opacity-80 font-bold uppercase">
-            Revenue - All Costs
-          </p>
-        </div>
-
-        {/* Estimated ROI */}
-        <div className="bg-amber-500/10 border border-amber-500/20 p-4 sm:p-5 rounded-3xl text-amber-700 dark:text-amber-400 space-y-1">
-          <span className="text-[9.5px] font-black uppercase block">
-            {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI' : 'Estimated ROI'}
-          </span>
-          <p className="text-xl font-black font-mono">
-            {financialOverview.estimatedROI.toFixed(1)}%
-          </p>
-          <p className="text-[9px] opacity-80 font-bold uppercase">
-            Return on Total Spent
-          </p>
-        </div>
-
-      </div>
-
-      {/* ================= 3. PAYMENT LIQUIDITY CARDS (Cash, Onepay, LDB) ================= */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        
-        {/* Total Liquidity Net */}
-        <div className="bg-gradient-to-br from-[#052659] to-[#073069] text-white p-5 rounded-3xl shadow-xl space-y-2 relative overflow-hidden">
-          <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-[#5483B3]">
-              {i18n.language === 'la' ? 'ຍອດເງິນຄົງເຫຼືອລວມທັງໝົດ' : 'Total Net Cashflow'}
-            </span>
-            <div className="p-2 bg-white/10 rounded-xl">
-              <DollarSign className="w-4 h-4 text-emerald-400" />
+            <div>
+              <h3 className="text-4xl sm:text-5xl font-black font-mono tracking-tight text-white">
+                {Math.round(financialOverview.totalNetLiquidity).toLocaleString()}
+                <span className="text-xl opacity-60 ml-2 font-sans font-bold">₭</span>
+              </h3>
             </div>
           </div>
-          <p className="text-2xl font-black font-mono tracking-tight">
-            {Math.round(financialOverview.totalNetLiquidity).toLocaleString()} ₭
-          </p>
-          <p className="text-[9px] text-blue-200/60 font-bold uppercase">
-            In: +{Math.round(financialOverview.totalRevenue).toLocaleString()} | Out: -{Math.round(financialOverview.totalExpenses).toLocaleString()}
-          </p>
+
+          <div className="pt-6 border-t border-white/10 mt-6 grid grid-cols-2 gap-4">
+            <div>
+              <span className="text-[9.5px] font-black uppercase text-emerald-400 flex items-center gap-1">
+                <ArrowUpRight className="w-3.5 h-3.5" />
+                Inflow (ລາຍຮັບ)
+              </span>
+              <p className="text-lg font-black font-mono text-white mt-0.5">
+                +{Math.round(financialOverview.totalRevenue).toLocaleString()} ₭
+              </p>
+            </div>
+
+            <div>
+              <span className="text-[9.5px] font-black uppercase text-rose-300 flex items-center gap-1">
+                <ArrowDownRight className="w-3.5 h-3.5" />
+                Outflow (ລາຍຈ່າຍ)
+              </span>
+              <p className="text-lg font-black font-mono text-white mt-0.5">
+                -{Math.round(financialOverview.totalExpenses).toLocaleString()} ₭
+              </p>
+            </div>
+          </div>
         </div>
 
-        {/* Cash In Hand */}
-        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
-          <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-              <Wallet className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ເງິນສົດ (Cash)' : 'Cash in Hand'}</span>
+        {/* RIGHT: 4 EXECUTIVE METRIC CARDS (7 Cols) */}
+        <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-2 gap-4">
+          
+          {/* Revenue */}
+          <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm flex flex-col justify-between">
+            <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              {i18n.language === 'la' ? 'ຍອດຂາຍລວມ (Revenue)' : 'Total Revenue'}
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
+            <div className="my-2">
+              <h4 className="text-2xl font-black font-mono text-emerald-600 dark:text-emerald-400">
+                {Math.round(financialOverview.totalRevenue).toLocaleString()} ₭
+              </h4>
+            </div>
+            <p className="text-[9.5px] text-slate-400 font-bold uppercase">Customer Inflows</p>
           </div>
-          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
+
+          {/* COGS Purchasing */}
+          <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm flex flex-col justify-between">
+            <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500"></span>
+              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
+            </span>
+            <div className="my-2">
+              <h4 className="text-2xl font-black font-mono text-red-500 dark:text-red-400">
+                {Math.round(financialOverview.totalPurchasing).toLocaleString()} ₭
+              </h4>
+            </div>
+            <p className="text-[9.5px] text-slate-400 font-bold uppercase">Material Procurement</p>
+          </div>
+
+          {/* Gross Margin % */}
+          <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm flex flex-col justify-between">
+            <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1.5">
+              <Percent className="w-3.5 h-3.5 text-blue-500" />
+              {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ' : 'Gross Margin'}
+            </span>
+            <div className="my-2">
+              <h4 className="text-2xl font-black font-mono text-blue-600 dark:text-blue-400">
+                {financialOverview.grossMarginPercent.toFixed(1)}%
+              </h4>
+            </div>
+            <p className="text-[9.5px] text-slate-400 font-bold uppercase">
+              GP: {Math.round(financialOverview.grossProfit).toLocaleString()} ₭
+            </p>
+          </div>
+
+          {/* Net Profit */}
+          <div className={`p-5 rounded-3xl border flex flex-col justify-between ${
+            financialOverview.netProfit >= 0 
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-400'
+              : 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400'
+          }`}>
+            <span className="text-[10px] font-black uppercase flex items-center gap-1.5">
+              {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
+            </span>
+            <div className="my-2">
+              <h4 className="text-2xl font-black font-mono">
+                {Math.round(financialOverview.netProfit).toLocaleString()} ₭
+              </h4>
+            </div>
+            <p className="text-[9.5px] opacity-80 font-bold uppercase">
+              Est. ROI: {financialOverview.estimatedROI.toFixed(1)}%
+            </p>
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* ================= 3. PAYMENT LIQUIDITY (Cash, Onepay, LDB) ================= */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        
+        {/* Cash */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-[11px] font-black uppercase text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
+              <Wallet className="w-4 h-4" />
+              <span>{i18n.language === 'la' ? 'ເງິນສົດໃນມື (Cash)' : 'Cash in Hand'}</span>
+            </span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-emerald-500/10 text-emerald-600 rounded-md font-bold">Cash</span>
+          </div>
+          <h4 className="text-2xl font-black font-mono text-slate-900 dark:text-white">
             {Math.round(financialOverview.cashNet).toLocaleString()} ₭
-          </p>
-          <div className="flex justify-between text-[9px] text-slate-400 font-bold">
+          </h4>
+          <div className="flex justify-between text-[10px] font-mono font-bold text-slate-400 pt-2 border-t border-slate-100 dark:border-white/5">
             <span className="text-emerald-500">+{Math.round(financialOverview.cashIncome).toLocaleString()}</span>
-            <span className="text-red-500">-{Math.round(financialOverview.cashExpense).toLocaleString()}</span>
+            <span className="text-rose-500">-{Math.round(financialOverview.cashExpense).toLocaleString()}</span>
           </div>
         </div>
 
-        {/* BCEL OnePay */}
-        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+        {/* OnePay */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-3">
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400 flex items-center gap-1.5">
-              <CreditCard className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'BCEL OnePay' : 'OnePay Balance'}</span>
+            <span className="text-[11px] font-black uppercase text-red-500 dark:text-red-400 flex items-center gap-2">
+              <CreditCard className="w-4 h-4" />
+              <span>{i18n.language === 'la' ? 'BCEL OnePay' : 'BCEL OnePay'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-red-500/10 text-red-500 rounded-md font-bold">OnePay</span>
           </div>
-          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
+          <h4 className="text-2xl font-black font-mono text-slate-900 dark:text-white">
             {Math.round(financialOverview.onepayNet).toLocaleString()} ₭
-          </p>
-          <div className="flex justify-between text-[9px] text-slate-400 font-bold">
+          </h4>
+          <div className="flex justify-between text-[10px] font-mono font-bold text-slate-400 pt-2 border-t border-slate-100 dark:border-white/5">
             <span className="text-emerald-500">+{Math.round(financialOverview.onepayIncome).toLocaleString()}</span>
-            <span className="text-red-500">-{Math.round(financialOverview.onepayExpense).toLocaleString()}</span>
+            <span className="text-rose-500">-{Math.round(financialOverview.onepayExpense).toLocaleString()}</span>
           </div>
         </div>
 
-        {/* LDB Bank */}
-        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+        {/* LDB */}
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-3">
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ທະນາຄານ LDB' : 'LDB Balance'}</span>
+            <span className="text-[11px] font-black uppercase text-blue-600 dark:text-blue-400 flex items-center gap-2">
+              <Building2 className="w-4 h-4" />
+              <span>{i18n.language === 'la' ? 'ທະນາຄານ LDB' : 'LDB Bank'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-blue-500/10 text-blue-600 rounded-md font-bold">LDB</span>
           </div>
-          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
+          <h4 className="text-2xl font-black font-mono text-slate-900 dark:text-white">
             {Math.round(financialOverview.ldbNet).toLocaleString()} ₭
-          </p>
-          <div className="flex justify-between text-[9px] text-slate-400 font-bold">
+          </h4>
+          <div className="flex justify-between text-[10px] font-mono font-bold text-slate-400 pt-2 border-t border-slate-100 dark:border-white/5">
             <span className="text-emerald-500">+{Math.round(financialOverview.ldbIncome).toLocaleString()}</span>
-            <span className="text-red-500">-{Math.round(financialOverview.ldbExpense).toLocaleString()}</span>
+            <span className="text-rose-500">-{Math.round(financialOverview.ldbExpense).toLocaleString()}</span>
           </div>
         </div>
 
       </div>
 
-      {/* ================= 4. EXECUTIVE INSIGHTS & WEEKLY CASH FLOW ROW ================= */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
+      {/* ================= 4. EXECUTIVE INSIGHTS & 7-DAY FLOW ================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        
         {/* LEFT: SMART BUSINESS INSIGHTS (5 Cols) */}
-        <div className="lg:col-span-5 high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4 flex flex-col justify-between">
+        <div className="lg:col-span-5 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm flex flex-col justify-between space-y-4">
           <div>
-            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3 mb-3">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
+            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3 mb-4">
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-emerald-500 animate-pulse" />
                 <span>{i18n.language === 'la' ? 'ບົດວິເຄາະ & Insights ສຳຄັນ' : 'Executive Business Insights'}</span>
               </h3>
-              <span className="text-[8.5px] font-black uppercase tracking-widest px-2 py-0.5 bg-primary/10 text-primary rounded-full">
+              <span className="text-[8.5px] font-black uppercase px-2 py-0.5 bg-primary/10 text-primary rounded-full">
                 AI Advisory
               </span>
             </div>
@@ -617,16 +600,14 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
                         : 'bg-blue-500/5 border-blue-500/20 text-blue-900 dark:text-blue-300'
                   }`}
                 >
-                  <div className="flex items-center gap-1.5">
-                    <div className={`w-1.5 h-1.5 rounded-full ${
+                  <h4 className="text-[11px] font-black uppercase tracking-tight flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${
                       insight.type === 'warning' ? 'bg-amber-500' : insight.type === 'success' ? 'bg-emerald-500' : 'bg-blue-500'
-                    }`}></div>
-                    <h4 className="text-[11px] font-black uppercase tracking-tight">
-                      {i18n.language === 'la' ? insight.titleLa : insight.titleEn}
-                    </h4>
-                  </div>
-                  <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium pl-3">
-                    {i18n.language === 'la' ? insight.descLa : insight.descEn}
+                    }`}></span>
+                    <span>{insight.title}</span>
+                  </h4>
+                  <p className="text-[10.5px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium pl-3">
+                    {insight.desc}
                   </p>
                 </div>
               ))}
@@ -634,19 +615,19 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
           </div>
 
           <div className="pt-3 border-t border-slate-100 dark:border-white/10 flex justify-between items-center text-[10px] text-slate-400 font-bold">
-            <span>{i18n.language === 'la' ? 'ສະຖານະສະຕັອກສິນຄ້າ:' : 'Active Inventory Items:'} {inventoryOverview.totalProducts}</span>
-            <span className={inventoryOverview.lowStockCount > 0 ? 'text-amber-500' : 'text-emerald-500'}>
-              {inventoryOverview.lowStockCount} Critical
+            <span>{i18n.language === 'la' ? 'ສິນຄ້າໃນລະບົບ:' : 'Catalog Items:'} {inventoryOverview.totalProducts}</span>
+            <span className={inventoryOverview.lowStockCount > 0 ? 'text-amber-500 font-black' : 'text-emerald-500 font-black'}>
+              {inventoryOverview.lowStockCount} {i18n.language === 'la' ? 'ໃກ້ໝົດສະຕັອກ' : 'Critical Low'}
             </span>
           </div>
         </div>
 
-        {/* RIGHT: 7-DAY INFLOW VS OUTFLOW CHART (7 Cols) */}
-        <div className="lg:col-span-7 high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4 flex flex-col justify-between">
+        {/* RIGHT: 7-DAY CASHFLOW CHART (7 Cols) */}
+        <div className="lg:col-span-7 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm space-y-4">
           <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-primary" />
-              <span>{i18n.language === 'la' ? 'ກະແສເງິນສົດ 7 ວັນລ່າສຸດ (7-Day Cashflow)' : '7-Day Inflow vs Outflow Trend'}</span>
+              <span>{i18n.language === 'la' ? 'ກະແສເງິນສົດ 7 ວັນລ່າສຸດ' : '7-Day Cashflow Dynamics'}</span>
             </h3>
             <div className="flex gap-3 text-[9px] font-black uppercase">
               <span className="flex items-center gap-1 text-emerald-500">
@@ -658,11 +639,11 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
             </div>
           </div>
 
-          <div className="h-[220px] w-full">
+          <div className="h-[230px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={financialOverview.trends7Days}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
-                <XAxis dataKey="date" tick={{fontSize: 9}} axisLine={false} tickLine={false} />
+                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.2} />
+                <XAxis dataKey="date" tick={{fontSize: 9, fontWeight: 700}} axisLine={false} tickLine={false} />
                 <YAxis hide />
                 <Tooltip 
                   contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', color: '#fff' }}
@@ -677,28 +658,28 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
 
       </div>
 
-      {/* ================= 5. STOCK HEALTH & REAL-TIME ACTIVITY ================= */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* ================= 5. STOCK HEALTH & RECENT TRANSACTIONS ================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         
-        {/* STOCK HEALTH FEED (6 Cols) */}
-        <div className="lg:col-span-6 high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
+        {/* STOCK HEALTH (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm space-y-4">
           <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
               <Package className="w-4 h-4 text-emerald-500" />
-              <span>{i18n.language === 'la' ? 'ສະຖານະສະຕັອກສິນຄ້າ (Stock Health)' : 'Inventory Stock Health'}</span>
+              <span>{i18n.language === 'la' ? 'ສະຖານະສະຕັອກສິນຄ້າ (Stock Health)' : 'Inventory Status'}</span>
             </h3>
             <button
               onClick={() => setShowInventoryModal(true)}
-              className="text-[9px] font-black uppercase text-primary hover:underline flex items-center gap-1"
+              className="text-[9.5px] font-black uppercase text-primary hover:underline flex items-center gap-1"
             >
-              View Full List
+              {i18n.language === 'la' ? 'ເບິ່ງທັງໝົດ' : 'View All'}
               <ChevronRight className="w-3 h-3" />
             </button>
           </div>
 
-          <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+          <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
             {inventoryOverview.stockHealth.slice(0, 6).map(item => (
-              <div key={item.id} className="p-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 flex justify-between items-center">
+              <div key={item.id} className="p-3 bg-slate-50 dark:bg-white/5 rounded-2xl flex justify-between items-center">
                 <div>
                   <p className="text-xs font-bold text-slate-800 dark:text-white">{item.name}</p>
                   <p className="text-[9px] text-slate-400 uppercase font-bold mt-0.5">
@@ -707,12 +688,10 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
                 </div>
 
                 <div className="text-right flex items-center gap-3">
-                  <div>
-                    <p className="text-xs font-mono font-black text-slate-800 dark:text-white">
-                      {item.current} <span className="text-[9px] text-slate-400 uppercase">{item.unit}</span>
-                    </p>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[8.5px] font-black uppercase ${
+                  <span className="text-xs font-mono font-black text-slate-800 dark:text-white">
+                    {item.current} {item.unit}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase ${
                     item.status === 'Critical' ? 'bg-red-500 text-white' : item.status === 'Warning' ? 'bg-amber-500 text-white' : 'bg-emerald-500 text-white'
                   }`}>
                     {item.status}
@@ -723,14 +702,14 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
           </div>
         </div>
 
-        {/* RECENT TRANSACTION LEDGER FEED (6 Cols) */}
-        <div className="lg:col-span-6 high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
+        {/* RECENT TRANSACTIONS (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm space-y-4">
           <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
               <History className="w-4 h-4 text-primary" />
-              <span>{i18n.language === 'la' ? 'ທຸລະກຳລ່າສຸດ (Recent Ledger)' : 'Recent Transactions'}</span>
+              <span>{i18n.language === 'la' ? 'ທຸລະກຳລ່າສຸດ (Recent Activity)' : 'Recent Transactions'}</span>
             </h3>
-            <span className="text-[9px] font-bold text-slate-400">
+            <span className="text-[9.5px] font-bold text-slate-400">
               {fsTransactions.length} logs
             </span>
           </div>
@@ -741,7 +720,7 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
               const ch = normalizePayment(tx.source);
 
               return (
-                <div key={tx.id} className="p-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 flex justify-between items-center">
+                <div key={tx.id} className="p-3 bg-slate-50 dark:bg-white/5 rounded-2xl flex justify-between items-center">
                   <div className="flex items-center gap-2.5">
                     <div className={`w-1.5 h-7 rounded-full ${isIncome ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                     <div>
@@ -772,10 +751,10 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
 
       </div>
 
-      {/* ================= INVENTORY DETAIL MODAL ================= */}
+      {/* ================= INVENTORY MODAL ================= */}
       {showInventoryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-[#073069] w-full max-w-3xl rounded-3xl p-6 shadow-2xl border border-white/10 space-y-4 max-h-[85vh] flex flex-col">
+          <div className="bg-white dark:bg-[#073069] w-full max-w-3xl rounded-[2.5rem] p-6 shadow-2xl border border-white/10 space-y-4 max-h-[85vh] flex flex-col">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h3 className="text-sm font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
                 <Package className="w-4 h-4 text-emerald-500" />
@@ -790,7 +769,7 @@ export default function Dashboard({ userSettings, user, selectedBranch }: Dashbo
               <input
                 type="text"
                 placeholder="Search items..."
-                className="w-full h-10 px-3 pl-8 rounded-xl bg-slate-50 dark:bg-white/5 border text-xs"
+                className="w-full h-10 px-3 pl-8 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
               />
