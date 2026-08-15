@@ -2,23 +2,21 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { auth, db, storage, handleFirestoreError, OperationType } from '../firebase';
 import { 
   collection, addDoc, onSnapshot, query, orderBy, 
-  deleteDoc, doc, setDoc, getDoc, getDocs, serverTimestamp 
+  deleteDoc, doc, setDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
-import { format, isSameMonth, parseISO, subDays } from 'date-fns';
+import { format, isSameMonth, parseISO } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { 
-  Upload, Receipt, PlusCircle, ArrowUpCircle, ArrowDownCircle, 
-  Info, Landmark, Download, BarChart3, Eye, EyeOff, X, Trash2, 
-  RefreshCw, Sparkles, CheckCircle, FileText, Wallet, CreditCard,
-  Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
-  Percent, ArrowUpRight, ArrowDownRight, Edit3, Check, Split, ShoppingBag
+  Upload, Receipt, PlusCircle, 
+  Download, Eye, EyeOff, X, Trash2, 
+  Sparkles, CheckCircle2, FileText, Wallet, CreditCard,
+  Building2, DollarSign, Calendar, Filter, PieChart,
+  Percent, ArrowUpRight, ArrowDownRight, Edit3, Check, Split,
+  AlertCircle, ShieldCheck
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
-} from 'recharts';
 import ApprovalModal from './ApprovalModal';
 import PinModal from './PinModal';
 
@@ -32,6 +30,16 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [dailyTransactions, setDailyTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showPrivacy, setShowPrivacy] = useState(false);
+
+  // 🌟 IN-APP TOAST NOTIFICATION STATE (ບໍ່ໃຊ້ alert ຂອງ browser)
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 2500);
+  };
 
   // Timeframe View Mode: 'month' vs 'all'
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
@@ -65,21 +73,19 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [oldTxData, setOldTxData] = useState<any>(null);
-  const [deleteReceipt, setDeleteReceipt] = useState(false);
   const [showEditPinModal, setShowEditPinModal] = useState(false);
   const [txToEdit, setTxToEdit] = useState<any>(null);
 
   const [txToDelete, setTxToDelete] = useState<any>(null);
   const [showDeletePinModal, setShowDeletePinModal] = useState(false);
 
-  // 🌟 PULL SUPPLIER PURCHASES STATES
+  // Supplier Purchases Pull States
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [pullDate, setPullDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [billPaymentSources, setBillPaymentSources] = useState<{ [id: string]: PaymentChannel }>({});
   const [importingBillId, setImportingBillId] = useState<string | null>(null);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   const normalizePaymentChannel = (src?: string): PaymentChannel => {
     if (!src) return 'Cash';
@@ -95,7 +101,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return Number(clean).toLocaleString();
   };
 
-  // Smart Auto-balance for Income Split
+  // Safe Auto-balance for Income Split
   const handleTotalAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const rawValue = e.target.value.replace(/,/g, '');
     if (rawValue === '' || !isNaN(Number(rawValue))) {
@@ -117,7 +123,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const val = Number(clean) || 0;
       setSplitCash(val);
       setSplitCashDisplay(formatWithCommas(clean));
-
       const total = formData.amount || (val + splitOnepay + splitLDB);
       const remaining = Math.max(0, total - val - splitOnepay);
       setSplitLDB(remaining);
@@ -131,7 +136,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const val = Number(clean) || 0;
       setSplitOnepay(val);
       setSplitOnepayDisplay(formatWithCommas(clean));
-
       const total = formData.amount || (splitCash + val + splitLDB);
       const remaining = Math.max(0, total - splitCash - val);
       setSplitLDB(remaining);
@@ -145,7 +149,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const val = Number(clean) || 0;
       setSplitLDB(val);
       setSplitLDBDisplay(formatWithCommas(clean));
-
       const sum = splitCash + splitOnepay + val;
       if (sum > formData.amount) {
         setFormData(prev => ({ ...prev, amount: sum }));
@@ -187,13 +190,12 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, [viewDate, selectedBranch]);
 
-  // Sync pullDate and paymentDate with viewDate
   useEffect(() => {
     setPullDate(viewDate);
     setPaymentDate(viewDate);
   }, [viewDate]);
 
-  // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
+  // Financial KPIs
   const financialSummary = useMemo(() => {
     const now = new Date();
 
@@ -245,11 +247,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     const netProfit = totalRevenue - totalExpenses;
     const estimatedROI = totalExpenses > 0 ? (netProfit / totalExpenses) * 100 : 0;
 
-    const cashNet = cashIncome - cashExpense;
-    const onepayNet = onepayIncome - onepayExpense;
-    const ldbNet = ldbIncome - ldbExpense;
-    const totalNetLiquidity = cashNet + onepayNet + ldbNet;
-
     return {
       totalRevenue,
       totalPurchasing,
@@ -259,14 +256,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       grossMarginPercent,
       netProfit,
       estimatedROI,
-      cashIncome, cashExpense, cashNet,
-      onepayIncome, onepayExpense, onepayNet,
-      ldbIncome, ldbExpense, ldbNet,
-      totalNetLiquidity
+      cashIncome, cashExpense, cashNet: cashIncome - cashExpense,
+      onepayIncome, onepayExpense, onepayNet: onepayIncome - onepayExpense,
+      ldbIncome, ldbExpense, ldbNet: ldbIncome - ldbExpense,
+      totalNetLiquidity: (cashIncome - cashExpense) + (onepayIncome - onepayExpense) + (ldbIncome - ldbExpense)
     };
   }, [allTransactions, timeframeMode]);
 
-  // 🌟 IDENTIFY IMPORTED BILLS
+  // Identify Imported Bills
   const importedSupplierPriceIds = useMemo(() => {
     const ids = new Set<string>();
     allTransactions.forEach((tx) => {
@@ -277,7 +274,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return ids;
   }, [allTransactions]);
 
-  // 🌟 GROUP BILLS FOR SELECTED PULL DATE
+  // Group Bills
   const supplierBillsForSelectedDate = useMemo(() => {
     const selectedDatePrices = supplierPrices.filter(p => p.date === pullDate);
 
@@ -360,7 +357,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return bills;
   }, [supplierPrices, pullDate, importedSupplierPriceIds]);
 
-  // 🌟 PULL BILL INTO TRANSACTIONS (EXPENSE)
+  // 🌟 ⚡ PULL SUPPLIER BILL (FAST ASYNC - NO BLOCKING ALERT)
   const handlePullSupplierBill = async (bill: any) => {
     if (!bill) return;
     try {
@@ -368,7 +365,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const totalAmount = Math.round(bill.totalPrice || 0);
 
       if (totalAmount <= 0) {
-        alert(i18n.language === 'la' ? 'ຍອດບິນຕ້ອງຫຼາຍກວ່າ 0 ₭' : 'Bill amount must be greater than 0');
+        showToast("ຍອດບິນຕ້ອງຫຼາຍກວ່າ 0 ₭", "error");
+        setImportingBillId(null);
         return;
       }
 
@@ -385,7 +383,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         category: 'Purchasing',
         description,
         source: selectedSource,
-        receiptUrl: bill.billImageUrl || '', // 👈 ແນບຮູບໃບບິນ Base64 ໄປພ້ອມເລີຍ!
+        receiptUrl: bill.billImageUrl || '',
         date: paymentDate,
         time: localTimeString,
         updatedAt: serverTimestamp(),
@@ -397,18 +395,17 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         branchId: selectedBranch || 'branch_1'
       });
 
-      alert(i18n.language === 'la' 
-        ? `ດຶງລາຍຈ່າຍຈາກ ${bill.supplier} ຈຳນວນ ${totalAmount.toLocaleString()} ₭ (${selectedSource}) ເຂົ້າບັນຊີ Finance ສຳເລັດແລ້ວ!` 
-        : `Successfully imported ${bill.supplier}'s purchase bill (${totalAmount.toLocaleString()} ₭) via ${selectedSource}!`);
+      // 🌟 Clean In-App Toast
+      showToast(`ດຶງລາຍຈ່າຍຈາກ ${bill.supplier} (${totalAmount.toLocaleString()} ₭) ສຳເລັດ!`, "success");
     } catch (err: any) {
-      console.error("Error pulling bill:", err);
-      alert(`Error: ${err.message}`);
+      console.error("Pull error:", err);
+      showToast(`ເກີດຂໍ້ຜິດພາດ: ${err.message}`, "error");
     } finally {
       setImportingBillId(null);
     }
   };
 
-  // Add / Edit Transaction
+  // 🌟 FAST TRANSACTION SAVE
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -416,12 +413,11 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const branchId = selectedBranch || 'branch_1';
       const batchGroupId = `split_${Date.now()}`;
 
-      // If Income and 3-Way Split
       if (formData.type === 'income' && is3WaySplit && !isEditing) {
         const entries: Array<{ amount: number; source: PaymentChannel; label: string }> = [
-          { amount: splitCash, source: 'Cash', label: 'ສ່ວນເງິນສົດ (Cash)' },
-          { amount: splitOnepay, source: 'Onepay', label: 'ສ່ວນ BCEL OnePay' },
-          { amount: splitLDB, source: 'LDB', label: 'ສ່ວນ ທະນາຄານ LDB' }
+          { amount: splitCash, source: 'Cash', label: 'ສ່ວນເງິນສົດ' },
+          { amount: splitOnepay, source: 'Onepay', label: 'ສ່ວນ OnePay' },
+          { amount: splitLDB, source: 'LDB', label: 'ສ່ວນ LDB' }
         ];
 
         let savedCount = 0;
@@ -447,11 +443,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           }
         }
 
-        alert(i18n.language === 'la' 
-          ? `ບັນທຶກລາຍຮັບແຍກ ${savedCount} ຊ່ອງທາງ (${formData.amount.toLocaleString()} ₭) ສຳເລັດແລ້ວ!` 
-          : `Saved ${savedCount} split income channels successfully!`);
+        showToast(`ບັນທຶກລາຍຮັບແຍກ ${savedCount} ຊ່ອງທາງ (${formData.amount.toLocaleString()} ₭) ສຳເລັດ!`, "success");
       } else {
-        // Standard Entry
         const txData = {
           type: formData.type,
           amount: formData.amount,
@@ -469,13 +462,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
         if (isEditing && editingId) {
           await setDoc(doc(db, 'transactions', editingId), txData, { merge: true });
-          alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດແລ້ວ!' : 'Transaction updated!');
+          showToast("ແກ້ໄຂລາຍການສຳເລັດ!", "success");
         } else {
           await addDoc(collection(db, 'transactions'), {
             ...txData,
             createdAt: serverTimestamp()
           });
-          alert(i18n.language === 'la' ? 'ບັນທຶກລາຍການສຳເລັດແລ້ວ!' : 'Transaction saved!');
+          showToast("ບັນທຶກລາຍການສຳເລັດ!", "success");
         }
       }
 
@@ -499,7 +492,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       setIsEditing(false);
       setEditingId(null);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -540,18 +533,34 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     try {
       setLoading(true);
       await deleteDoc(doc(db, 'transactions', txToDelete.id));
-      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດແລ້ວ!' : 'Transaction deleted!');
+      showToast("ລຶບລາຍການສຳເລັດ!", "info");
       setShowDeletePinModal(false);
       setTxToDelete(null);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, "error");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+
+      {/* 🌟 IN-APP MODERN TOAST NOTIFICATION (ບໍ່ໃຊ້ alert ຂອງ browser) */}
+      {toast && (
+        <div className="fixed top-6 right-6 z-[100] animate-in fade-in slide-in-from-top-4 duration-300 pointer-events-none">
+          <div className={`px-5 py-3.5 rounded-2xl shadow-2xl backdrop-blur-xl border flex items-center gap-3 text-xs font-black tracking-wide ${
+            toast.type === 'success' 
+              ? 'bg-emerald-500 text-white border-emerald-400 shadow-emerald-500/30' 
+              : toast.type === 'error'
+                ? 'bg-rose-500 text-white border-rose-400 shadow-rose-500/30'
+                : 'bg-[#052659] text-white border-blue-400 shadow-blue-500/30'
+          }`}>
+            {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+            <span>{toast.message}</span>
+          </div>
+        </div>
+      )}
 
       {/* ================= 1. HEADER & TIMEFRAME SWITCHER ================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
@@ -609,7 +618,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         </div>
       </div>
 
-      {/* ================= 2. 4 PAYMENT LIQUIDITY CARDS (TOTAL, CASH, ONEPAY, LDB) ================= */}
+      {/* ================= 2. 4 PAYMENT LIQUIDITY CARDS ================= */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
         {/* Total Net Balance */}
@@ -637,7 +646,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               <Wallet className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ເງິນສົດໃນມື (Cash)' : 'Cash in Hand'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded font-bold">Cash</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.cashNet).toLocaleString()} ₭`}
@@ -655,7 +664,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               <CreditCard className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'BCEL OnePay' : 'OnePay Balance'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded font-bold">OnePay</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.onepayNet).toLocaleString()} ₭`}
@@ -673,7 +682,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               <Building2 className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ທະນາຄານ LDB' : 'LDB Balance'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded font-bold">LDB</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.ldbNet).toLocaleString()} ₭`}
@@ -836,7 +845,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </div>
               )}
 
-              {/* Category & Payment Channel (If Expense) */}
+              {/* Category & Payment Channel */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Category</label>
@@ -905,7 +914,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </form>
           </div>
 
-          {/* 🌟 🌟 🌟 ກ່ອງດຶງລາຍຈ່າຍຜູ້ສະໜອງ (PULL SUPPLIER PURCHASES WIDGET) 🌟 🌟 🌟 */}
+          {/* 🌟 🌟 🌟 ກ່ອງດຶງລາຍຈ່າຍຜູ້ສະໜອງ (PULL SUPPLIER PURCHASES - FAST & SMOOTH) 🌟 🌟 🌟 */}
           <div className="bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <div className="flex items-center gap-2">
@@ -924,7 +933,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             {/* Date Selectors */}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <label className="text-[9px] font-black uppercase text-slate-400">1. ວັນທີຜູ້ສະໜອງ (Supplier Date)</label>
+                <label className="text-[9px] font-black uppercase text-slate-400">1. ວັນທີຜູ້ສະໜອງ</label>
                 <input 
                   type="date"
                   value={pullDate}
@@ -934,7 +943,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               </div>
 
               <div className="space-y-1">
-                <label className="text-[9px] font-black uppercase text-slate-400">2. ວັນທີຊຳລະ (Payment Date)</label>
+                <label className="text-[9px] font-black uppercase text-slate-400">2. ວັນທີຊຳລະ</label>
                 <input 
                   type="date"
                   value={paymentDate}
@@ -944,7 +953,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               </div>
             </div>
 
-            {/* Supplier Bills List for Selected Pull Date */}
+            {/* Supplier Bills List */}
             <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
               {supplierBillsForSelectedDate.length === 0 ? (
                 <div className="p-6 text-center text-slate-400 text-xs font-bold uppercase tracking-wider border border-dashed border-slate-200 dark:border-white/10 rounded-2xl">
@@ -991,7 +1000,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                               className="flex-1 h-8 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 shadow-md cursor-pointer"
                             >
                               <Check className="w-3.5 h-3.5" />
-                              <span>{importingBillId === bill.id ? 'ດຶງ...' : 'ດຶງລາຍຈ່າຍ (Pull)'}</span>
+                              <span>{importingBillId === bill.id ? 'ກຳລັງດຶງ...' : 'ດຶງລາຍຈ່າຍ (Pull)'}</span>
                             </button>
                           </>
                         ) : (
@@ -1056,10 +1065,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                       </div>
 
                       <div className="flex gap-1">
-                        <button onClick={() => startEdit(tx)} className="p-1.5 text-slate-400 hover:text-blue-500">
+                        <button onClick={() => startEdit(tx)} className="p-1.5 text-slate-400 hover:text-blue-500 cursor-pointer">
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => startDelete(tx)} className="p-1.5 text-slate-400 hover:text-red-500">
+                        <button onClick={() => startDelete(tx)} className="p-1.5 text-slate-400 hover:text-red-500 cursor-pointer">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
