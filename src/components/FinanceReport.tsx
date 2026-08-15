@@ -1,60 +1,45 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, onSnapshot, orderBy } from 'firebase/firestore';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  AreaChart, Area, PieChart as RePie, Pie, Cell, Legend
+  PieChart as RePie, Pie, Cell, Legend
 } from 'recharts';
 import { 
-  TrendingUp, DollarSign, Percent, PieChart, BarChart3, 
-  ArrowUpRight, ArrowDownRight, Sparkles, Download, Calendar, 
-  Filter, Wallet, CreditCard, Building2, ShoppingCart, 
-  FileText, CheckCircle2, AlertTriangle, Layers, Award, RefreshCw
+  PieChart, 
+  ArrowUpRight, ArrowDownRight, Sparkles, Download, 
+  Wallet, CreditCard, Building2, Percent
 } from 'lucide-react';
-import { format, isSameMonth, parseISO, subMonths, startOfMonth, endOfMonth, isWithinInterval } from 'date-fns';
+import { format, isSameMonth, parseISO, subMonths } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
-import { jsPDF } from 'jspdf';
 import { useTranslation } from 'react-i18next';
 
 export default function FinanceReport({ selectedBranch }: { selectedBranch?: string }) {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
 
   const [transactions, setTransactions] = useState<any[]>([]);
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
-  const [products, setProducts] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Timeframe View Switcher: 'month' (This Month) vs 'last_month' vs 'all'
-  const [timeframeMode, setTimeframeMode] = useState<'month' | 'last_month' | 'all'>('month');
+  const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
   const [selectedMonthStr, setSelectedMonthStr] = useState<string>(format(new Date(), 'yyyy-MM'));
 
-  // Subscribe to real-time collections
   useEffect(() => {
-    setLoading(true);
     const branch = selectedBranch || 'branch_1';
 
     const unsubTx = onSnapshot(query(collection(db, 'transactions'), orderBy('date', 'desc')), (snap) => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTransactions(all.filter((tx: any) => (tx.branchId || 'branch_1') === branch));
-    });
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'transactions'));
 
     const unsubSuppliers = onSnapshot(collection(db, 'supplierPrices'), (snap) => {
       setSupplierPrices(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    });
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'supplierPrices'));
 
     return () => {
       unsubTx();
       unsubSuppliers();
-      unsubProducts();
     };
   }, [selectedBranch]);
 
-  // Normalize channel helper
   const normalizePayment = (src?: string): 'Cash' | 'Onepay' | 'LDB' => {
     if (!src) return 'Cash';
     const s = src.toLowerCase();
@@ -63,10 +48,8 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
     return 'Cash';
   };
 
-  // ================= 📊 1. DYNAMIC FINANCIAL CALCULATION & LEGACY COGS EXTRACTOR =================
   const financialData = useMemo(() => {
-    const now = new Date();
-    const targetDate = timeframeMode === 'last_month' ? subMonths(now, 1) : parseISO(`${selectedMonthStr}-01`);
+    const targetDate = parseISO(`${selectedMonthStr}-01`);
 
     const filterByTimeframe = (dateStr?: string) => {
       if (timeframeMode === 'all') return true;
@@ -81,7 +64,6 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
 
     const activeTransactions = transactions.filter(tx => filterByTimeframe(tx.date));
 
-    // 🌟 SEPARATE LEGACY & MODERN PURCHASING FOR PRECISE COGS (Avoid Duplicate Pulls)
     let totalRevenue = 0;
     let totalCOGS = 0;
     let totalSalary = 0;
@@ -101,7 +83,6 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       }
     });
 
-    // 1. Process Transactions
     activeTransactions.forEach(tx => {
       const amt = Number(tx.amount) || 0;
       const ch = normalizePayment(tx.source);
@@ -116,19 +97,12 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
         const cat = (tx.category || '').toLowerCase();
         const isPurchasing = cat.includes('purchas') || cat.includes('supply') || cat.includes('ຊື້');
 
-        if (isPurchasing) {
-          totalCOGS += amt;
-        } else if (cat.includes('salary') || cat.includes('ເງິນເດືອນ')) {
-          totalSalary += amt;
-        } else if (cat.includes('rent') || cat.includes('ຄ່າເຊົ່າ')) {
-          totalRent += amt;
-        } else if (cat.includes('operat') || cat.includes('ດຳເນີນງານ') || cat.includes('water') || cat.includes('elect')) {
-          totalOperations += amt;
-        } else if (cat.includes('admin') || cat.includes('ບໍລິຫານ')) {
-          totalAdmin += amt;
-        } else {
-          totalOtherExpenses += amt;
-        }
+        if (isPurchasing) totalCOGS += amt;
+        else if (cat.includes('salary') || cat.includes('ເງິນເດືອນ')) totalSalary += amt;
+        else if (cat.includes('rent') || cat.includes('ຄ່າເຊົ່າ')) totalRent += amt;
+        else if (cat.includes('operat') || cat.includes('ດຳເນີນງານ') || cat.includes('water') || cat.includes('elect')) totalOperations += amt;
+        else if (cat.includes('admin') || cat.includes('ບໍລິຫານ')) totalAdmin += amt;
+        else totalOtherExpenses += amt;
 
         if (ch === 'Cash') cashOut += amt;
         else if (ch === 'Onepay') onepayOut += amt;
@@ -136,7 +110,6 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       }
     });
 
-    // 2. Extract any unimported supplierPrices (Legacy purchasing) for complete COGS
     supplierPrices.forEach(sp => {
       if (!sp.date || importedSupplierPriceIds.has(sp.id)) return;
       if (filterByTimeframe(sp.date)) {
@@ -156,7 +129,6 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       }
     });
 
-    // Executive Metrics
     const totalOPEX = totalSalary + totalRent + totalOperations + totalAdmin + totalOtherExpenses;
     const totalExpenses = totalCOGS + totalOPEX;
     const grossProfit = totalRevenue - totalCOGS;
@@ -164,7 +136,6 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
     const netProfit = totalRevenue - totalExpenses;
     const estimatedROI = totalExpenses > 0 ? (netProfit / totalExpenses) * 100 : 0;
 
-    // Category Pie Chart Data
     const categoryChartData = [
       { name: 'COGS (ວັດຖຸດິບ)', value: totalCOGS, color: '#ef4444' },
       { name: 'Salary (ເງິນເດືອນ)', value: totalSalary, color: '#f59e0b' },
@@ -182,98 +153,81 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       grossMarginPercent,
       netProfit,
       estimatedROI,
-      cashIn, cashOut, cashNet: cashIn - cashOut,
-      onepayIn, onepayOut, onepayNet: onepayIn - onepayOut,
-      ldbIn, ldbOut, ldbNet: ldbIn - ldbOut,
+      cashNet: cashIn - cashOut,
+      onepayNet: onepayIn - onepayOut,
+      ldbNet: ldbIn - ldbOut,
       categoryChartData,
       activePeriodName: timeframeMode === 'all' ? 'All-Time' : format(targetDate, 'MMMM yyyy')
     };
   }, [transactions, supplierPrices, timeframeMode, selectedMonthStr]);
 
-  // ================= 💡 2. EXECUTIVE AI INSIGHTS & AUDIT ADVISORY =================
   const smartInsights = useMemo(() => {
     const list: Array<{ titleLa: string; titleEn: string; descLa: string; descEn: string; type: 'success' | 'warning' | 'info' }> = [];
     const { totalRevenue, totalCOGS, grossMarginPercent, netProfit, estimatedROI } = financialData;
 
-    // 1. Gross Margin Analysis
     if (totalRevenue > 0) {
       if (grossMarginPercent >= 55) {
         list.push({
           titleLa: 'ອັດຕາກຳໄລຂັ້ນຕົ້ນດີເລີດ (High Margin)',
           titleEn: 'Exceptional Gross Margin',
-          descLa: `Gross Margin ສູງເຖິງ ${grossMarginPercent.toFixed(1)}% ສະແດງວ່າສູດ ແລະ ລາຄາຂາຍກຳນົດໄດ້ດີຫຼາຍ!`,
-          descEn: `Gross Margin is at ${grossMarginPercent.toFixed(1)}%, indicating strong recipe pricing efficiency.`,
+          descLa: `Gross Margin ສູງເຖິງ ${grossMarginPercent.toFixed(1)}% ສ້າງກຳໄລສຸດທິ ${Math.round(netProfit).toLocaleString()} ₭.`,
+          descEn: `Gross Margin at ${grossMarginPercent.toFixed(1)}% delivering ${Math.round(netProfit).toLocaleString()} ₭ Net Profit.`,
           type: 'success'
         });
       } else if (grossMarginPercent < 40) {
         list.push({
           titleLa: 'ຕົ້ນທຶນວັດຖຸດິບສູງເກີນເກນ (High COGS)',
           titleEn: 'COGS Pressure Alert',
-          descLa: `Gross Margin ຕ່ຳກວ່າ 40% (${grossMarginPercent.toFixed(1)}%). ຄວນຕໍ່ລອງລາຄາວັດຖຸດິບກັບ Supplier ຫຼື ປັບຂະໜາດ Portions.`,
-          descEn: `Gross Margin below 40% (${grossMarginPercent.toFixed(1)}%). Negotiate bulk prices or refine recipe portions.`,
+          descLa: `Gross Margin ຕ່ຳກວ່າ 40% (${grossMarginPercent.toFixed(1)}%). ຄວນຕໍ່ລອງລາຄາວັດຖຸດິບກັບ Supplier.`,
+          descEn: `Gross Margin below 40% (${grossMarginPercent.toFixed(1)}%). Negotiate bulk rates with suppliers.`,
           type: 'warning'
         });
       }
     }
 
-    // 2. Net Profit & ROI Analysis
     if (netProfit > 0) {
       list.push({
-        titleLa: `ທຸລະກິດສ້າງກຳໄລສຸດທິ ${Math.round(netProfit).toLocaleString()} ₭`,
-        titleEn: `Net Positive Return of ${Math.round(netProfit).toLocaleString()} ₭`,
-        descLa: `ຜົນຕອບແທນ ROI ຢູ່ທີ່ ${estimatedROI.toFixed(1)}%. ທຸລະກິດມີສະພາບຄ່ອງແຂງແກ່ນ.`,
-        descEn: `Estimated ROI is ${estimatedROI.toFixed(1)}%, confirming strong operational liquidity.`,
+        titleLa: `ກຳໄລສຸດທິ ${Math.round(netProfit).toLocaleString()} ₭`,
+        titleEn: `Net Positive ${Math.round(netProfit).toLocaleString()} ₭`,
+        descLa: `ຜົນຕອບແທນ ROI ຢູ່ທີ່ ${estimatedROI.toFixed(1)}%. ສະພາບຄ່ອງທຸລະກິດດີຫຼາຍ.`,
+        descEn: `Estimated ROI is ${estimatedROI.toFixed(1)}%.`,
         type: 'success'
-      });
-    } else if (netProfit < 0) {
-      list.push({
-        titleLa: 'ແຈ້ງເຕືອນລາຍຈ່າຍເກີນລາຍຮັບ (Deficit)',
-        titleEn: 'Operating Deficit Warning',
-        descLa: `ລາຍຈ່າຍລວມເກີນລາຍຮັບ ${Math.abs(Math.round(netProfit)).toLocaleString()} ₭. ຄວນຕັດລາຍຈ່າຍທີ່ບໍ່ຈຳເປັນ.`,
-        descEn: `Expenses exceed inflows by ${Math.abs(Math.round(netProfit)).toLocaleString()} ₭. Reduce non-essential OPEX.`,
-        type: 'warning'
       });
     }
 
-    // 3. COGS Ratio
     const cogsRatio = totalRevenue > 0 ? (totalCOGS / totalRevenue) * 100 : 0;
     list.push({
       titleLa: `ອັດຕາສ່ວນ COGS ຕໍ່ຍອດຂາຍ: ${cogsRatio.toFixed(1)}%`,
-      titleEn: `COGS-to-Revenue Ratio: ${cogsRatio.toFixed(1)}%`,
-      descLa: `ມາດຕະຖານຮ້ານອາຫານ/ຄາເຟແມ່ນ 30% - 35%. ປັດຈຸບັນໃຊ້ຕົ້ນທຶນວັດຖຸດິບ ${Math.round(totalCOGS).toLocaleString()} ₭.`,
-      descEn: `Industry standard benchmark is 30% - 35%. Current material costs: ${Math.round(totalCOGS).toLocaleString()} ₭.`,
+      titleEn: `COGS Ratio: ${cogsRatio.toFixed(1)}%`,
+      descLa: `ມາດຕະຖານແມ່ນ 30% - 35%. ປັດຈຸບັນໃຊ້ຕົ້ນທຶນ ${Math.round(totalCOGS).toLocaleString()} ₭.`,
+      descEn: `Standard benchmark is 30% - 35%. Current COGS: ${Math.round(totalCOGS).toLocaleString()} ₭.`,
       type: cogsRatio <= 35 ? 'success' : 'info'
     });
 
     return list;
   }, [financialData]);
 
-  // Export to Excel
   const handleExportExcel = () => {
-    const headers = ['Financial Metric', 'Amount (LAK)', 'Notes'];
+    const headers = ['Metric', 'Amount (LAK)', 'Notes'];
     const rows = [
-      ['Total Revenue (ຍອດຂາຍລວມ)', financialData.totalRevenue, 'Inflow from Sales'],
-      ['COGS (ຕົ້ນທຶນວັດຖຸດິບ)', financialData.totalCOGS, 'Material Purchases (Purchasing)'],
-      ['Gross Profit (ກຳໄລຂັ້ນຕົ້ນ)', financialData.grossProfit, 'Revenue - COGS'],
-      ['Gross Margin %', `${financialData.grossMarginPercent.toFixed(2)}%`, 'Margin Percentage'],
-      ['Operating Expenses (OPEX)', financialData.totalOPEX, 'Salary, Rent, Utilities, Admin'],
-      ['Net Profit (ກຳໄລສຸດທິ)', financialData.netProfit, 'Revenue - All Costs'],
-      ['Estimated ROI %', `${financialData.estimatedROI.toFixed(2)}%`, 'Return on Total Investment'],
-      ['Cash Balance (ເງິນສົດ)', financialData.cashNet, 'Physical Cash in Hand'],
-      ['OnePay Balance (BCEL)', financialData.onepayNet, 'Digital Transfers'],
-      ['LDB Balance (ທະນາຄານ)', financialData.ldbNet, 'Bank Account']
+      ['Total Revenue', financialData.totalRevenue, 'Inflows'],
+      ['COGS (Purchasing)', financialData.totalCOGS, 'Material Cost'],
+      ['Gross Profit', financialData.grossProfit, 'Revenue - COGS'],
+      ['Gross Margin %', `${financialData.grossMarginPercent.toFixed(2)}%`, 'Margin Ratio'],
+      ['OPEX', financialData.totalOPEX, 'Operating Costs'],
+      ['Net Profit', financialData.netProfit, 'Bottom Line Profit'],
+      ['Estimated ROI %', `${financialData.estimatedROI.toFixed(2)}%`, 'Return on Costs']
     ];
 
     const worksheet = utils.aoa_to_sheet([headers, ...rows]);
     const workbook = utils.book_new();
-    utils.book_append_sheet(workbook, worksheet, 'Executive Financial Report');
-    writeFile(workbook, `Financial_Report_${financialData.activePeriodName.replace(/\s+/g, '_')}.xlsx`);
+    utils.book_append_sheet(workbook, worksheet, 'Finance Report');
+    writeFile(workbook, `Finance_Report_${financialData.activePeriodName.replace(/\s+/g, '_')}.xlsx`);
   };
 
   return (
     <div className="space-y-6">
-
-      {/* ================= 1. HEADER & TIMEFRAME SELECTOR ================= */}
+      {/* Top Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
@@ -282,20 +236,19 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">
-                {i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ & ວິເຄາະທຸລະກິດ (Finance Report)' : 'Financial Performance & Insights'}
+                {i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ & ວິເຄາະທຸລະກິດ' : 'Financial Performance & Insights'}
               </h2>
               <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
                 {(selectedBranch || 'branch_1') === 'branch_1' ? (i18n.language === 'la' ? 'ສາຂາ 1' : 'Branch 1') : (i18n.language === 'la' ? 'ສາຂາ 2' : 'Branch 2')}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-bold mt-0.5">
-              {i18n.language === 'la' ? `ຮອບໄລຍະເວລາ: ${financialData.activePeriodName}` : `Active Period: ${financialData.activePeriodName}`}
+              {financialData.activePeriodName}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Month Selector */}
           <input
             type="month"
             value={selectedMonthStr}
@@ -330,7 +283,7 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
           <button
             type="button"
             onClick={handleExportExcel}
-            className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md cursor-pointer"
+            className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Excel</span>
@@ -338,5 +291,177 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
         </div>
       </div>
 
-      {/* ================= 2. 🌟 5 CORE FINANCIAL KPIS (REVENUE, COGS, MARGIN, NET PROFIT, ROI) ================= */}
-      <div className="grid grid-cols-2 lg:grid-cols-
+      {/* 5 Core Financial KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-1">
+          <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1">
+            <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
+            Total Revenue
+          </span>
+          <p className="text-2xl font-black font-mono text-emerald-600 dark:text-emerald-400">
+            {Math.round(financialData.totalRevenue).toLocaleString()} ₭
+          </p>
+          <p className="text-[9px] text-slate-400 font-bold uppercase">Customer Inflows</p>
+        </div>
+
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-1">
+          <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1">
+            <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
+            COGS (Purchasing)
+          </span>
+          <p className="text-2xl font-black font-mono text-red-500 dark:text-red-400">
+            {Math.round(financialData.totalCOGS).toLocaleString()} ₭
+          </p>
+          <p className="text-[9px] text-slate-400 font-bold uppercase">Material Costs</p>
+        </div>
+
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-1">
+          <span className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-1">
+            <Percent className="w-3.5 h-3.5 text-blue-500" />
+            Gross Margin
+          </span>
+          <p className="text-2xl font-black font-mono text-blue-600 dark:text-blue-400">
+            {financialData.grossMarginPercent.toFixed(1)}%
+          </p>
+          <p className="text-[9px] text-slate-400 font-bold uppercase">
+            GP: {Math.round(financialData.grossProfit).toLocaleString()} ₭
+          </p>
+        </div>
+
+        <div className={`p-5 rounded-3xl border space-y-1 ${
+          financialData.netProfit >= 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-800 dark:text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400'
+        }`}>
+          <span className="text-[10px] font-black uppercase block">Net Profit</span>
+          <p className="text-2xl font-black font-mono">
+            {Math.round(financialData.netProfit).toLocaleString()} ₭
+          </p>
+          <p className="text-[9px] opacity-80 font-bold uppercase">
+            OPEX: {Math.round(financialData.totalOPEX).toLocaleString()} ₭
+          </p>
+        </div>
+
+        <div className="bg-amber-500/10 border border-amber-500/20 p-5 rounded-3xl text-amber-700 dark:text-amber-400 space-y-1">
+          <span className="text-[10px] font-black uppercase block">Estimated ROI</span>
+          <p className="text-2xl font-black font-mono">
+            {financialData.estimatedROI.toFixed(1)}%
+          </p>
+          <p className="text-[9px] opacity-80 font-bold uppercase">Return on Total Cost</p>
+        </div>
+      </div>
+
+      {/* 3 Channels */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[11px] font-black uppercase text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+              <Wallet className="w-4 h-4" />
+              <span>ເງິນສົດ (Cash)</span>
+            </span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-emerald-500/10 text-emerald-600 rounded font-bold">Cash</span>
+          </div>
+          <p className="text-2xl font-black font-mono text-slate-800 dark:text-white">
+            {Math.round(financialData.cashNet).toLocaleString()} ₭
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[11px] font-black uppercase text-red-500 dark:text-red-400 flex items-center gap-1.5">
+              <CreditCard className="w-4 h-4" />
+              <span>BCEL OnePay</span>
+            </span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-red-500/10 text-red-500 rounded font-bold">OnePay</span>
+          </div>
+          <p className="text-2xl font-black font-mono text-slate-800 dark:text-white">
+            {Math.round(financialData.onepayNet).toLocaleString()} ₭
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[11px] font-black uppercase text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+              <Building2 className="w-4 h-4" />
+              <span>ທະນາຄານ LDB</span>
+            </span>
+            <span className="text-[9px] font-mono px-2 py-0.5 bg-blue-500/10 text-blue-600 rounded font-bold">LDB</span>
+          </div>
+          <p className="text-2xl font-black font-mono text-slate-800 dark:text-white">
+            {Math.round(financialData.ldbNet).toLocaleString()} ₭
+          </p>
+        </div>
+      </div>
+
+      {/* Chart & Insights Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-6 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm space-y-4">
+          <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
+              <PieChart className="w-4 h-4 text-primary" />
+              <span>ໂຄງສ້າງຕົ້ນທຶນ & ລາຍຈ່າຍ (Cost Breakdown)</span>
+            </h3>
+            <span className="text-[10px] font-mono font-bold text-slate-400">
+              Total: {Math.round(financialData.totalExpenses).toLocaleString()} ₭
+            </span>
+          </div>
+
+          <div className="h-[240px] w-full flex items-center justify-center">
+            {financialData.categoryChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <RePie>
+                  <Pie
+                    data={financialData.categoryChartData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={85}
+                    paddingAngle={4}
+                    dataKey="value"
+                  >
+                    {financialData.categoryChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(val: number) => [`${val.toLocaleString()} ₭`, '']} />
+                  <Legend />
+                </RePie>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-xs text-slate-400 uppercase font-bold">No records found for this period</p>
+            )}
+          </div>
+        </div>
+
+        <div className="lg:col-span-6 bg-white dark:bg-[#073069] p-6 rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm flex flex-col justify-between space-y-4">
+          <div>
+            <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3 mb-3">
+              <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-500 animate-pulse" />
+                <span>ບົດວິເຄາະ & Insights ຜູ້ບໍລິຫານ</span>
+              </h3>
+              <span className="text-[8.5px] font-black uppercase px-2 py-0.5 bg-primary/10 text-primary rounded-full">
+                AI Strategic
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              {smartInsights.map((insight, idx) => (
+                <div
+                  key={idx}
+                  className={`p-3.5 rounded-2xl border space-y-1 ${
+                    insight.type === 'warning' ? 'bg-amber-500/5 border-amber-500/20 text-amber-900 dark:text-amber-300' : 'bg-emerald-500/5 border-emerald-500/20 text-emerald-900 dark:text-emerald-300'
+                  }`}
+                >
+                  <h4 className="text-[11px] font-black uppercase tracking-tight">{insight.titleLa}</h4>
+                  <p className="text-[10.5px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium">{insight.descLa}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="pt-3 border-t border-slate-100 dark:border-white/10 text-[10px] text-slate-400 font-bold">
+            Realtime Audit Engine Connected
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
