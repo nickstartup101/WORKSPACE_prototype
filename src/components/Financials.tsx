@@ -13,7 +13,7 @@ import {
   Eye, EyeOff, X, Trash2, Sparkles, Wallet, CreditCard, Building2, 
   TrendingUp, DollarSign, Calendar, Filter, PieChart, Percent, 
   ArrowUpRight, ArrowDownRight, Tag, Image as ImageIcon, Edit3, 
-  Split, CheckCircle2, AlertCircle, RefreshCw
+  Split, CheckCircle2, AlertCircle
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -24,7 +24,7 @@ import PinModal from './PinModal';
 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
-// 🛡️ Error Boundary ປ້ອງກັນໜ້າຂາວ
+// 🛡️ Error Boundary
 class FinancialsErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: string }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -111,12 +111,12 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
   const { t, i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // In-App Toast State
+  // In-App Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 2800);
+    setTimeout(() => setToast(null), 2500);
   };
 
   // Core Data States
@@ -143,11 +143,16 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
   const [approvalType, setApprovalType] = useState<'transaction' | 'bank' | null>(null);
   const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-  // Multi-Channel Split Income State
+  // Multi-Channel Split Income State with Auto-Comma Display
   const [channelMode, setChannelMode] = useState<'single' | 'split'>('single');
-  const [splitCashAmount, setSplitCashAmount] = useState<number | string>('');
-  const [splitOnepayAmount, setSplitOnepayAmount] = useState<number | string>('');
-  const [splitLdbAmount, setSplitLdbAmount] = useState<number | string>('');
+  const [splitCashAmount, setSplitCashAmount] = useState<number>(0);
+  const [displaySplitCash, setDisplaySplitCash] = useState<string>('');
+  
+  const [splitOnepayAmount, setSplitOnepayAmount] = useState<number>(0);
+  const [displaySplitOnepay, setDisplaySplitOnepay] = useState<string>('');
+
+  const [splitLdbAmount, setSplitLdbAmount] = useState<number>(0);
+  const [displaySplitLdb, setDisplaySplitLdb] = useState<string>('');
 
   // Form State
   const [formData, setFormData] = useState({
@@ -164,10 +169,10 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
 
   const [displayAmount, setDisplayAmount] = useState('');
 
-  const formatWithCommas = (val: string) => {
-    const num = val.replace(/,/g, '');
+  const formatWithCommas = (val: string | number) => {
+    const num = String(val).replace(/,/g, '');
     if (!num) return '';
-    if (isNaN(Number(num))) return displayAmount;
+    if (isNaN(Number(num))) return String(val);
     return Number(num).toLocaleString();
   };
 
@@ -176,6 +181,26 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
     if (rawValue === '' || !isNaN(Number(rawValue))) {
       setDisplayAmount(formatWithCommas(e.target.value));
       setFormData(prev => ({ ...prev, amount: Number(rawValue) || 0 }));
+    }
+  };
+
+  // Split Channel Commas Handler
+  const handleSplitAmountChange = (channel: 'cash' | 'onepay' | 'ldb', rawVal: string) => {
+    const clean = rawVal.replace(/,/g, '');
+    if (clean === '' || !isNaN(Number(clean))) {
+      const formatted = formatWithCommas(rawVal);
+      const num = Number(clean) || 0;
+
+      if (channel === 'cash') {
+        setDisplaySplitCash(formatted);
+        setSplitCashAmount(num);
+      } else if (channel === 'onepay') {
+        setDisplaySplitOnepay(formatted);
+        setSplitOnepayAmount(num);
+      } else if (channel === 'ldb') {
+        setDisplaySplitLdb(formatted);
+        setSplitLdbAmount(num);
+      }
     }
   };
 
@@ -608,7 +633,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
     }
   };
 
-  // Submit Transaction
+  // ⚡ ULTRA-FAST TRANSACTION SUBMISSION (PARALLEL WRITE & ZERO LAG)
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -623,7 +648,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
       const cleanDate = toStandardDateString(formData.date) || format(new Date(), 'yyyy-MM-dd');
       const timeStr = formData.time || format(new Date(), 'HH:mm');
 
-      // SPLIT 3-CHANNELS ENTRY
+      // 🌟 1. PARALLEL SPLIT INCOME WRITE (Cash + OnePay + LDB)
       if (channelMode === 'split' && !isEditing && formData.type === 'income') {
         const cashVal = parseAmount(splitCashAmount);
         const onepayVal = parseAmount(splitOnepayAmount);
@@ -636,8 +661,10 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
           return;
         }
 
+        const promises: Promise<any>[] = [];
+
         if (cashVal > 0) {
-          await addDoc(collection(db, 'transactions'), {
+          promises.push(addDoc(collection(db, 'transactions'), {
             type: formData.type,
             amount: cashVal,
             category: formData.category,
@@ -651,11 +678,11 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             userEmail: auth.currentUser?.email || 'admin@example.com',
             branchId: selectedBranch || 'branch_1',
             createdAt: serverTimestamp()
-          });
+          }));
         }
 
         if (onepayVal > 0) {
-          await addDoc(collection(db, 'transactions'), {
+          promises.push(addDoc(collection(db, 'transactions'), {
             type: formData.type,
             amount: onepayVal,
             category: formData.category,
@@ -669,11 +696,11 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             userEmail: auth.currentUser?.email || 'admin@example.com',
             branchId: selectedBranch || 'branch_1',
             createdAt: serverTimestamp()
-          });
+          }));
         }
 
         if (ldbVal > 0) {
-          await addDoc(collection(db, 'transactions'), {
+          promises.push(addDoc(collection(db, 'transactions'), {
             type: formData.type,
             amount: ldbVal,
             category: formData.category,
@@ -687,18 +714,24 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             userEmail: auth.currentUser?.email || 'admin@example.com',
             branchId: selectedBranch || 'branch_1',
             createdAt: serverTimestamp()
-          });
+          }));
         }
+
+        // Execute all 3 writes simultaneously
+        await Promise.all(promises);
 
         showToast(i18n.language === 'la' 
           ? `ບັນທຶກແຍກ 3 ຊ່ອງທາງລວມ ${totalSplit.toLocaleString()} ₭ ສຳເລັດ!` 
           : `Split transaction saved (${totalSplit.toLocaleString()} ₭)!`, 'success');
 
-        setSplitCashAmount('');
-        setSplitOnepayAmount('');
-        setSplitLdbAmount('');
+        setSplitCashAmount(0);
+        setDisplaySplitCash('');
+        setSplitOnepayAmount(0);
+        setDisplaySplitOnepay('');
+        setSplitLdbAmount(0);
+        setDisplaySplitLdb('');
       } 
-      // SINGLE CHANNEL ENTRY
+      // 🌟 2. SINGLE CHANNEL ENTRY
       else {
         const txData = {
           type: formData.type,
@@ -729,6 +762,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
         }
       }
 
+      // Instant optimistic reset
       setFormData({
         type: 'income',
         amount: 0,
@@ -1203,12 +1237,12 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                 </div>
               </div>
 
-              {/* PAYMENT CHANNEL SELECTION */}
+              {/* PAYMENT CHANNEL SELECTION (WITH AUTO COMMAS) */}
               {channelMode === 'split' && !isEditing && formData.type === 'income' ? (
                 <div className="p-4 bg-slate-50 dark:bg-[#041a3c] rounded-2xl border border-slate-200/80 dark:border-white/10 space-y-3">
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                     <Split className="w-3.5 h-3.5 text-blue-500" />
-                    <span>ປ້ອນຍອດແຍກຕາມ 3 ຊ່ອງທາງ</span>
+                    <span>ປ້ອນຍອດແຍກຕາມ 3 ຊ່ອງທາງ (ໃສ່ຈຸດອັດຕະໂນມັດ)</span>
                   </span>
 
                   {/* Cash Row */}
@@ -1217,12 +1251,11 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                     <div className="flex-1">
                       <span className="text-[9px] font-black uppercase text-emerald-600 dark:text-emerald-400 block">Cash (ເງິນສົດ)</span>
                       <input 
-                        type="number"
-                        min="0"
+                        type="text"
                         placeholder="0"
                         className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
-                        value={splitCashAmount}
-                        onChange={e => setSplitCashAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                        value={displaySplitCash}
+                        onChange={e => handleSplitAmountChange('cash', e.target.value)}
                       />
                     </div>
                     <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
@@ -1234,12 +1267,11 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                     <div className="flex-1">
                       <span className="text-[9px] font-black uppercase text-red-500 dark:text-red-400 block">BCEL OnePay (QR)</span>
                       <input 
-                        type="number"
-                        min="0"
+                        type="text"
                         placeholder="0"
                         className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
-                        value={splitOnepayAmount}
-                        onChange={e => setSplitOnepayAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                        value={displaySplitOnepay}
+                        onChange={e => handleSplitAmountChange('onepay', e.target.value)}
                       />
                     </div>
                     <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
@@ -1251,12 +1283,11 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                     <div className="flex-1">
                       <span className="text-[9px] font-black uppercase text-blue-600 dark:text-blue-400 block">ທະນາຄານ LDB</span>
                       <input 
-                        type="number"
-                        min="0"
+                        type="text"
                         placeholder="0"
                         className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
-                        value={splitLdbAmount}
-                        onChange={e => setSplitLdbAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                        value={displaySplitLdb}
+                        onChange={e => handleSplitAmountChange('ldb', e.target.value)}
                       />
                     </div>
                     <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
@@ -1592,7 +1623,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                 </button>
               </div>
 
-              {/* Plain Text Navigation Buttons (NO EMOJIS) */}
+              {/* Navigation Shortcuts */}
               <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100 dark:border-white/5 text-[9.5px]">
                 <button
                   type="button"
