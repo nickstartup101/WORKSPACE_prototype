@@ -28,8 +28,9 @@ const SUPPLIER_CODES: Record<string, string> = {
   'HEAVENLY': 'HV',
   'DMART': 'DM',
   'MARRY ANN': 'MA',
-  'LATERRAS': 'LT',
   'LUCKKHANA': 'LK',
+  'LA TERRASSE': 'LT',
+  'VIS': 'VS',
   'OTHER': 'OT'
 };
 
@@ -159,7 +160,7 @@ export default function Suppliers() {
   const [mergeMultiplier, setMergeMultiplier] = useState(1);
   const [isMerging, setIsMerging] = useState(false);
 
-  // Auto Bill No Generation: # + DDMMYYYY + SupplierCode (e.g. #14082026CH)
+  // Auto Bill No Generation: # + DDMMYYYY + SupplierCode
   const generatedBillNo = useMemo(() => {
     try {
       const parts = billDate.split('-');
@@ -768,7 +769,7 @@ export default function Suppliers() {
 
       </div>
 
-      {/* ================= 3. COGS COMPARISON CHART (THIS MONTH VS LAST MONTH) ================= */}
+      {/* ================= 3. COGS COMPARISON CHART ================= */}
       <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-3">
           <div>
@@ -952,6 +953,9 @@ export default function Suppliers() {
                     <option value="HEAVENLY">HEAVENLY (HV)</option>
                     <option value="DMART">DMART (DM)</option>
                     <option value="MARRY ANN">MARRY ANN (MA)</option>
+                    <option value="LUCKKHANA">Luckkhana (LK)</option>
+                    <option value="LA TERRASSE">La Terrasse (LT)</option>
+                    <option value="VIS">VIS (VS)</option>
                     <option value="OTHER">Other (OT)</option>
                   </select>
                 </div>
@@ -1522,7 +1526,7 @@ export default function Suppliers() {
               </button>
             </div>
             <div className="flex-1 overflow-auto rounded-2xl bg-black/5 flex items-center justify-center p-2">
-              <img src={previewImageUrl} alt="Receipt Preview" className="max-h-[70vh] w-auto object-contain rounded-xl" />
+              <img src={previewImageUrl} alt="Receipt Preview" className="max-h-[70vh] w-auto object-contain rounded-xl shadow-md" />
             </div>
           </div>
         </div>
