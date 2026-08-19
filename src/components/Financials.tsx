@@ -9,10 +9,11 @@ import imageCompression from 'browser-image-compression';
 import { format, subDays } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { 
-  Upload, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
-  Sparkles, Wallet, CreditCard, Building2, TrendingUp, DollarSign, 
-  Calendar, Filter, PieChart, Percent, ArrowUpRight, ArrowDownRight, Tag,
-  Image as ImageIcon, Edit3, Split, CheckCircle2, AlertCircle, RefreshCw
+  Upload, PlusCircle, ArrowUpCircle, ArrowDownCircle, Download, BarChart3, 
+  Eye, EyeOff, X, Trash2, Sparkles, Wallet, CreditCard, Building2, 
+  TrendingUp, DollarSign, Calendar, Filter, PieChart, Percent, 
+  ArrowUpRight, ArrowDownRight, Tag, Image as ImageIcon, Edit3, 
+  Split, CheckCircle2, AlertCircle, RefreshCw
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -110,7 +111,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
   const { t, i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // In-App Toast
+  // In-App Toast State
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -341,7 +342,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
     });
   }, [allTransactions, viewDate, showAllMonthRecords]);
 
-  // In-Memory Weekly Chart Data (100% Safe)
+  // In-Memory Weekly Chart Data
   const weeklyData = useMemo(() => {
     const standardDate = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
     let validBase = new Date();
@@ -623,7 +624,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
       const timeStr = formData.time || format(new Date(), 'HH:mm');
 
       // SPLIT 3-CHANNELS ENTRY
-      if (channelMode === 'split' && !isEditing) {
+      if (channelMode === 'split' && !isEditing && formData.type === 'income') {
         const cashVal = parseAmount(splitCashAmount);
         const onepayVal = parseAmount(splitOnepayAmount);
         const ldbVal = parseAmount(splitLdbAmount);
@@ -640,7 +641,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             type: formData.type,
             amount: cashVal,
             category: formData.category,
-            description: formData.description ? `${formData.description} (ເງິນສົດ Cash)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (Cash)`,
+            description: formData.description ? `${formData.description} (ເງິນສົດ Cash)` : 'ລາຍຮັບ (Cash)',
             source: 'Cash',
             receiptUrl,
             date: cleanDate,
@@ -658,7 +659,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             type: formData.type,
             amount: onepayVal,
             category: formData.category,
-            description: formData.description ? `${formData.description} (BCEL OnePay)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (OnePay)`,
+            description: formData.description ? `${formData.description} (BCEL OnePay)` : 'ລາຍຮັບ (OnePay)',
             source: 'Onepay',
             receiptUrl,
             date: cleanDate,
@@ -676,7 +677,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
             type: formData.type,
             amount: ldbVal,
             category: formData.category,
-            description: formData.description ? `${formData.description} (ທະນາຄານ LDB)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (LDB)`,
+            description: formData.description ? `${formData.description} (ທະນາຄານ LDB)` : 'ລາຍຮັບ (LDB)',
             source: 'LDB',
             receiptUrl,
             date: cleanDate,
@@ -916,7 +917,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
         </div>
       </div>
 
-      {/* ================= 2. PAYMENT CHANNELS CARDS ================= */}
+      {/* ================= 2. PAYMENT CHANNELS CARDS (Cash, Onepay, LDB) ================= */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-gradient-to-br from-[#052659] to-[#073069] text-white p-5 rounded-3xl shadow-xl space-y-2 relative overflow-hidden">
           <div className="flex justify-between items-center">
@@ -1150,7 +1151,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                 </button>
               </div>
 
-              {/* Mode Selector: Single Channel vs Split (Only for Income when not editing) */}
+              {/* Mode Selector: Single Channel vs Split */}
               {!isEditing && formData.type === 'income' && (
                 <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
                   <button
@@ -1591,7 +1592,7 @@ function FinancialsContent({ appConfig, selectedBranch }: { appConfig: any, sele
                 </button>
               </div>
 
-              {/* Navigation Shortcuts */}
+              {/* Plain Text Navigation Buttons (NO EMOJIS) */}
               <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100 dark:border-white/5 text-[9.5px]">
                 <button
                   type="button"
