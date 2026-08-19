@@ -6,19 +6,19 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Legend, Area, AreaChart
 } from 'recharts';
 import { 
   Plus, Trash2, Edit3, Save, X, Search, Download, 
-  BarChart3, List, Check, Receipt, ShoppingBag, 
+  List, Check, Receipt, ShoppingBag, 
   Image as ImageIcon, Upload, Eye, Wallet, CreditCard,
-  Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
-  Percent, ArrowUpRight, ArrowDownRight, Tag, Sparkles
+  Building2, TrendingUp, DollarSign, Calendar, Tag,
+  Layers, ArrowUpRight, ArrowDownRight, Package, Sparkles
 } from 'lucide-react';
-import { format, isSameMonth, parseISO } from 'date-fns';
+import { format, subMonths } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { useTranslation } from 'react-i18next';
-import { COMMON_RESOURCES } from '../constants';
 import ApprovalModal from './ApprovalModal';
 
 // Supplier Code abbreviations for automatic Bill No generation
@@ -28,6 +28,8 @@ const SUPPLIER_CODES: Record<string, string> = {
   'HEAVENLY': 'HV',
   'DMART': 'DM',
   'MARRY ANN': 'MA',
+  'LATERRAS': 'LT',
+  'LUCKKHANA': 'LK',
   'OTHER': 'OT'
 };
 
@@ -48,24 +50,57 @@ interface FormItemRow {
   isDropdownOpen?: boolean;
 }
 
+// 🛡️ Bulletproof Date Normalizer
+const toStandardDateString = (raw: any): string => {
+  if (!raw) return '';
+  if (typeof raw === 'string') {
+    const clean = raw.trim();
+    if (clean.includes('T')) return clean.split('T')[0];
+    if (clean.includes('-')) {
+      const parts = clean.split('-');
+      if (parts.length === 3) {
+        return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      }
+    }
+    if (clean.includes('/')) {
+      const parts = clean.split('/');
+      if (parts.length === 3 && parts[2].length === 4) {
+        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+    }
+    return clean;
+  }
+  if (raw && typeof raw.toDate === 'function') {
+    try {
+      return format(raw.toDate(), 'yyyy-MM-dd');
+    } catch {
+      return '';
+    }
+  }
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    try {
+      return format(raw, 'yyyy-MM-dd');
+    } catch {
+      return '';
+    }
+  }
+  return '';
+};
+
 export default function Suppliers() {
   const { t, i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [products, setProducts] = useState<any[]>([]);
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
-  const [financeTransactions, setFinanceTransactions] = useState<any[]>([]);
   const [selectedFilterDate, setSelectedFilterDate] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
-  
-  // View Timeframe Switcher: 'month' (This Month) vs 'all' (All-Time)
-  const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
   // Entry Mode Switcher: 'batch' (Multi-Item in 1 Bill) vs 'single' (Single Item Fast Entry)
   const [entryMode, setEntryMode] = useState<'batch' | 'single'>('batch');
 
-  // Drag & Drop Highlight state
+  // Drag & Drop State for Receipts
   const [isDragging, setIsDragging] = useState(false);
 
   // Product Manager Modal States
@@ -139,7 +174,7 @@ export default function Suppliers() {
     return `#${format(new Date(), 'ddMMyyyy')}${SUPPLIER_CODES[supplier] || 'OT'}`;
   }, [billDate, supplier]);
 
-  // ================= 🖼️ IMAGE PROCESSOR (COMPRESSION & BASE64) =================
+  // ================= 🖼️ IMAGE PROCESSOR (DRAG & DROP, CTRL+V PASTE) =================
   const processImageFile = (file: File) => {
     if (!file || !file.type.startsWith('image/')) {
       alert(i18n.language === 'la' ? 'ກະລຸນາເລືອກໄຟລ໌ຮູບພາບ (JPG, PNG...)' : 'Please provide an image file (JPG, PNG...).');
@@ -171,7 +206,7 @@ export default function Suppliers() {
     reader.readAsDataURL(file);
   };
 
-  // 📋 1. CLIPBOARD PASTE LISTENER (CTRL + V)
+  // Clipboard Paste Listener (Ctrl + V)
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -194,7 +229,6 @@ export default function Suppliers() {
     };
   }, [i18n.language]);
 
-  // 📂 2. DRAG & DROP HANDLERS
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -218,13 +252,6 @@ export default function Suppliers() {
     }
   };
 
-  const handleManualFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processImageFile(file);
-    }
-  };
-
   // Subscribe to Firestore collections
   useEffect(() => {
     const qP = query(collection(db, 'products'), orderBy('name'));
@@ -242,141 +269,89 @@ export default function Suppliers() {
       handleFirestoreError(error, OperationType.LIST, 'supplierPrices');
     });
 
-    const qF = query(collection(db, 'transactions'));
-    const unsubscribeF = onSnapshot(qF, (snap) => {
-      setFinanceTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, () => {});
-
     return () => {
       unsubscribeP();
       unsubscribeS();
-      unsubscribeF();
     };
   }, []);
 
   // Sort supplierPrices by date descending
   const sortedSupplierPrices = useMemo(() => {
     return [...supplierPrices].sort((a, b) => {
-      const dateA = a.date || '';
-      const dateB = b.date || '';
+      const dateA = toStandardDateString(a.date || a.createdAt);
+      const dateB = toStandardDateString(b.date || b.createdAt);
       if (dateA !== dateB) return dateB.localeCompare(dateA);
-      const timeA = a.time || '';
-      const timeB = b.time || '';
-      if (timeA !== timeB) return timeB.localeCompare(timeA);
-      const secondsA = a.createdAt?.seconds || 0;
-      const secondsB = b.createdAt?.seconds || 0;
-      return secondsB - secondsA;
+      return String(b.time || '').localeCompare(String(a.time || ''));
     });
   }, [supplierPrices]);
 
-  // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
-  const financialSummary = useMemo(() => {
+  // ================= 📈 COGS PROCUREMENT ANALYTICS (THIS MONTH VS LAST MONTH) =================
+  const cogsAnalytics = useMemo(() => {
     const now = new Date();
+    const currentMonthPrefix = format(now, 'yyyy-MM');
+    const lastMonthPrefix = format(subMonths(now, 1), 'yyyy-MM');
 
-    const filterByTimeframe = (recordDateStr?: string) => {
-      if (timeframeMode === 'all') return true;
-      if (!recordDateStr) return true;
-      try {
-        const d = parseISO(recordDateStr);
-        return isSameMonth(d, now);
-      } catch {
-        return true;
-      }
-    };
+    let thisMonthTotal = 0;
+    let lastMonthTotal = 0;
+    let thisMonthOrdersCount = 0;
 
-    const activePrices = supplierPrices.filter(p => filterByTimeframe(p.date));
-    const activeFinance = financeTransactions.filter(f => filterByTimeframe(f.date));
+    const thisMonthDaysMap: { [day: number]: number } = {};
+    const lastMonthDaysMap: { [day: number]: number } = {};
 
-    let totalCashSpent = 0;
-    let totalOnepaySpent = 0;
-    let totalLdbSpent = 0;
+    const uniqueBillsThisMonth = new Set<string>();
+    const suppliersThisMonth = new Set<string>();
 
-    let totalRevenue = 0;
-    let totalPurchasing = 0;
-    let totalSalary = 0;
-    let totalRental = 0;
-    let totalOperation = 0;
-    let totalAdmin = 0;
-    let totalOtherExpense = 0;
+    supplierPrices.forEach(p => {
+      const dStr = toStandardDateString(p.date || p.createdAt);
+      if (!dStr) return;
 
-    activePrices.forEach(p => {
-      const isNew = p.totalPriceLAK !== undefined;
-      const amount = isNew
+      const amt = p.totalPriceLAK !== undefined
         ? Number(p.totalPriceLAK || 0)
         : (p.currency === 'LAK' ? Number(p.priceOriginal || 0) : Number(p.priceOriginal || 0) * Number(p.exchangeRate || 1)) * (Number(p.quantity) || 1);
 
-      const payMethod: PaymentMethod = p.paymentMethod || 'Cash';
-      if (payMethod === 'Cash') totalCashSpent += amount;
-      else if (payMethod === 'Onepay') totalOnepaySpent += amount;
-      else if (payMethod === 'LDB') totalLdbSpent += amount;
+      const parts = dStr.split('-');
+      if (parts.length === 3) {
+        const dayNum = parseInt(parts[2], 10);
 
-      const cat: ExpenseCategory = p.category || 'purchasing';
-      if (cat === 'purchasing') totalPurchasing += amount;
-      else if (cat === 'salary') totalSalary += amount;
-      else if (cat === 'rental') totalRental += amount;
-      else if (cat === 'operation') totalOperation += amount;
-      else if (cat === 'admin') totalAdmin += amount;
-      else if (cat === 'sales') totalRevenue += amount;
-      else totalOtherExpense += amount;
-    });
-
-    activeFinance.forEach(f => {
-      const amt = Number(f.amount || 0);
-      if (f.type === 'income' || f.category === 'sales') {
-        totalRevenue += amt;
-      } else {
-        const cat = (f.category || 'other').toLowerCase();
-        if (cat === 'purchasing') totalPurchasing += amt;
-        else if (cat === 'salary') totalSalary += amt;
-        else if (cat === 'rental') totalRental += amt;
-        else if (cat === 'operation') totalOperation += amt;
-        else if (cat === 'admin') totalAdmin += amt;
-        else totalOtherExpense += amt;
-
-        const pay = f.paymentMethod || 'Cash';
-        if (pay === 'Cash') totalCashSpent += amt;
-        else if (pay === 'Onepay') totalOnepaySpent += amt;
-        else if (pay === 'LDB') totalLdbSpent += amt;
+        if (dStr.startsWith(currentMonthPrefix)) {
+          thisMonthTotal += amt;
+          thisMonthDaysMap[dayNum] = (thisMonthDaysMap[dayNum] || 0) + amt;
+          if (p.billNo) uniqueBillsThisMonth.add(p.billNo);
+          if (p.supplier) suppliersThisMonth.add(p.supplier);
+          thisMonthOrdersCount++;
+        } else if (dStr.startsWith(lastMonthPrefix)) {
+          lastMonthTotal += amt;
+          lastMonthDaysMap[dayNum] = (lastMonthDaysMap[dayNum] || 0) + amt;
+        }
       }
     });
 
-    const totalOPEX = totalSalary + totalRental + totalOperation + totalAdmin + totalOtherExpense;
-    const totalAllExpenses = totalPurchasing + totalOPEX;
-    const grandTotalSpent = totalCashSpent + totalOnepaySpent + totalLdbSpent;
-
-    const grossProfit = totalRevenue - totalPurchasing;
-    const grossMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
-    const netProfit = totalRevenue - totalAllExpenses;
-    const estimatedROI = totalAllExpenses > 0 ? (netProfit / totalAllExpenses) * 100 : 0;
-
-    return {
-      totalCashSpent,
-      totalOnepaySpent,
-      totalLdbSpent,
-      grandTotalSpent,
-      totalRevenue,
-      totalPurchasing,
-      totalOPEX,
-      totalAllExpenses,
-      grossProfit,
-      grossMarginPercent,
-      netProfit,
-      estimatedROI
-    };
-  }, [supplierPrices, financeTransactions, timeframeMode]);
-
-  // Latest 10 records for chart
-  const lastTenPrices = useMemo(() => {
-    return [...supplierPrices].slice(0, 10).reverse().map(p => {
-      const isNew = p.totalPriceLAK !== undefined;
-      const totalLAK = isNew
-        ? Number(p.totalPriceLAK || 0)
-        : (p.currency === 'LAK' ? p.priceOriginal : p.priceOriginal * (p.exchangeRate || 1));
+    // Generate comparison chart data (Day 1 to Day 31)
+    const chartData = Array.from({ length: 31 }, (_, i) => {
+      const day = i + 1;
       return {
-        ...p,
-        totalLAK,
+        day: `${day}`,
+        thisMonth: thisMonthDaysMap[day] || 0,
+        lastMonth: lastMonthDaysMap[day] || 0
       };
     });
+
+    // % Difference
+    const diffAmount = thisMonthTotal - lastMonthTotal;
+    const diffPercent = lastMonthTotal > 0 ? (diffAmount / lastMonthTotal) * 100 : 0;
+
+    return {
+      thisMonthTotal,
+      lastMonthTotal,
+      diffAmount,
+      diffPercent,
+      thisMonthOrdersCount,
+      uniqueBillsCount: uniqueBillsThisMonth.size || thisMonthOrdersCount,
+      activeSuppliersCount: suppliersThisMonth.size,
+      chartData,
+      currentMonthLabel: format(now, 'MMMM yyyy'),
+      lastMonthLabel: format(subMonths(now, 1), 'MMMM yyyy')
+    };
   }, [supplierPrices]);
 
   // Form Row Helpers
@@ -443,7 +418,7 @@ export default function Suppliers() {
     }, 0);
   }, [billItems, currency, exchangeRate]);
 
-  // Submit the Bill (Single or Batch)
+  // Submit the Bill
   const handleSaveBillBatch = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -499,7 +474,7 @@ export default function Suppliers() {
           quantityPerUnit: qtyPerUnit,
           unit: item.unit || 'UNIT',
           remark: item.remark || '',
-          date: billDate,
+          date: toStandardDateString(billDate) || format(new Date(), 'yyyy-MM-dd'),
           time: billTime,
           priceMode: item.priceMode,
           createdAt: serverTimestamp(),
@@ -668,7 +643,7 @@ export default function Suppliers() {
     const headers = ['Bill No', 'Date', 'Category', 'Payment Method', 'Product', 'Supplier', 'Price LAK', 'Total LAK', 'Quantity', 'Unit', 'Remark', 'User'];
     const rows = sortedSupplierPrices.map(p => [
       p.billNo || '-',
-      p.date || format(p.createdAt?.toDate() || new Date(), 'yyyy-MM-dd'),
+      toStandardDateString(p.date || p.createdAt),
       p.category || 'purchasing',
       p.paymentMethod || 'Cash',
       products.find(prod => prod.id === p.productId)?.name || 'Unknown',
@@ -683,241 +658,178 @@ export default function Suppliers() {
 
     const worksheet = utils.aoa_to_sheet([headers, ...rows]);
     const workbook = utils.book_new();
-    utils.book_append_sheet(workbook, worksheet, 'Suppliers & Finance Report');
-    writeFile(workbook, `suppliers_finance_report_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+    utils.book_append_sheet(workbook, worksheet, 'Suppliers Procurement Report');
+    writeFile(workbook, `suppliers_procurement_report_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
   };
 
   return (
     <div className="space-y-6">
       
-      {/* ================= 1. TIMEFRAME SELECTOR & HEADER ================= */}
+      {/* ================= 1. PROCUREMENT HEADER BAR ================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-2xl">
-            <PieChart className="w-5 h-5" />
+            <ShoppingBag className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
-              {i18n.language === 'la' ? 'ລະບົບລາຍຈ່າຍ & ຜູ້ສະໜອງ (Finance & Suppliers)' : 'Finance & Supplier Procurement Hub'}
+              {i18n.language === 'la' ? 'ລະບົບຈັດຊື້ & ລາຄາຜູ້ສະໜອງ (Procurement & COGS)' : 'Supplier Procurement Hub'}
             </h2>
             <p className="text-[10px] text-slate-400 dark:text-slate-300 font-bold uppercase mt-0.5">
-              {timeframeMode === 'month' 
-                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${format(new Date(), 'MMMM yyyy')})`)
-                : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time Data)' : 'Viewing: All-Time Overall Balance')}
+              {i18n.language === 'la' ? `ສະຫຼຸບການຈັດຊື້ປະຈຳເດືອນ (${cogsAnalytics.currentMonthLabel})` : `Monthly Procurement Overview (${cogsAnalytics.currentMonthLabel})`}
             </p>
           </div>
         </div>
 
-        {/* Timeframe Toggle Switch */}
-        <div className="flex items-center gap-2 self-start sm:self-auto">
-          <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
-            <button
-              type="button"
-              onClick={() => setTimeframeMode('month')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                timeframeMode === 'month'
-                  ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
-              }`}
-            >
-              <Calendar className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ພາຍໃນເດືອນນີ້' : 'This Month'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setTimeframeMode('all')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                timeframeMode === 'all'
-                  ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
-              }`}
-            >
-              <Filter className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ຍອດລວມທັງໝົດ' : 'All-Time'}</span>
-            </button>
-          </div>
-
+        <div className="flex items-center gap-2">
           <button 
             type="button" 
             onClick={() => setShowProductManager(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-white font-black text-xs uppercase rounded-2xl transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-white font-black text-xs uppercase rounded-2xl transition-all cursor-pointer"
           >
             <List className="w-3.5 h-3.5 text-primary" />
-            <span>{i18n.language === 'la' ? 'ສິນຄ້າ' : 'Items'}</span>
+            <span>{i18n.language === 'la' ? 'ຈັດການສິນຄ້າ / Items' : 'Manage Items'}</span>
           </button>
         </div>
       </div>
 
-      {/* ================= 2. PAYMENT CHANNELS CARDS (Cash, Onepay, LDB) ================= */}
+      {/* ================= 2. PROCUREMENT SUMMARY CARDS ================= */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
-        {/* Total Liquidity Spent */}
+        {/* This Month Total COGS */}
         <div className="bg-gradient-to-br from-[#052659] to-[#073069] text-white p-5 rounded-3xl shadow-xl space-y-2 relative overflow-hidden">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-[#5483B3]">
-              {i18n.language === 'la' ? 'ຍອດລາຍຈ່າຍລວມທັງໝົດ' : 'Total Outflow Sum'}
+              {i18n.language === 'la' ? 'ຍອດສັ່ງຊື້ວັດຖຸດິບເດືອນນີ້' : 'This Month Procurement'}
             </span>
-            <div className="p-2 bg-white/10 rounded-xl">
-              <DollarSign className="w-4 h-4 text-emerald-400" />
-            </div>
+            <DollarSign className="w-4 h-4 text-emerald-400" />
           </div>
-          <p className="text-xl font-black font-mono tracking-tight">
-            {Math.round(financialSummary.grandTotalSpent).toLocaleString()} ₭
+          <p className="text-2xl font-black font-mono tracking-tight">
+            {Math.round(cogsAnalytics.thisMonthTotal).toLocaleString()} ₭
           </p>
-          <p className="text-[9.5px] text-blue-200/60 font-bold uppercase">
-            {timeframeMode === 'month' ? 'Current Month Total' : 'All Recorded Transactions'}
+          <p className="text-[9px] text-blue-200/60 font-bold uppercase">
+            {cogsAnalytics.thisMonthOrdersCount} Items • {cogsAnalytics.currentMonthLabel}
           </p>
         </div>
 
-        {/* Cash In-Hand */}
+        {/* Last Month Total COGS */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-              <Wallet className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ເງິນສົດ (Cash)' : 'Cash Outflow'}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+              {i18n.language === 'la' ? 'ຍອດສັ່ງຊື້ເດືອນຜ່ານມາ' : 'Last Month Procurement'}
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
+            <Calendar className="w-4 h-4 text-slate-400" />
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
-            {Math.round(financialSummary.totalCashSpent).toLocaleString()} ₭
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
+            {Math.round(cogsAnalytics.lastMonthTotal).toLocaleString()} ₭
           </p>
-          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
-            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານເງິນສົດ' : 'Physical Cash'}</span>
-            <span className="text-emerald-500 font-mono">
-              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalCashSpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
-            </span>
-          </div>
+          <p className="text-[9px] text-slate-400 font-bold uppercase">
+            {cogsAnalytics.lastMonthLabel}
+          </p>
         </div>
 
-        {/* BCEL OnePay */}
-        <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
+        {/* Comparison Difference % */}
+        <div className={`p-5 rounded-3xl border space-y-2 ${
+          cogsAnalytics.diffAmount <= 0 
+            ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400' 
+            : 'bg-amber-500/10 border-amber-500/20 text-amber-700 dark:text-amber-400'
+        }`}>
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400 flex items-center gap-1.5">
-              <CreditCard className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ໂອນ BCEL OnePay' : 'OnePay Outflow'}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest">
+              {i18n.language === 'la' ? 'ທຽບໃສ່ເດືອນກ່ອນ' : 'COGS vs Last Month'}
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
+            {cogsAnalytics.diffAmount <= 0 ? <ArrowDownRight className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
-            {Math.round(financialSummary.totalOnepaySpent).toLocaleString()} ₭
+          <p className="text-xl font-black font-mono">
+            {cogsAnalytics.diffAmount <= 0 ? '-' : '+'}{Math.abs(cogsAnalytics.diffPercent).toFixed(1)}%
           </p>
-          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
-            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານ OnePay QR' : 'BCEL QR Transfer'}</span>
-            <span className="text-red-500 font-mono">
-              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalOnepaySpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
-            </span>
-          </div>
+          <p className="text-[9px] font-bold opacity-80 uppercase">
+            {cogsAnalytics.diffAmount <= 0 
+              ? (i18n.language === 'la' ? 'ປະຢັດຕົ້ນທຶນລົງ' : 'Lower purchasing spend')
+              : (i18n.language === 'la' ? 'ລາຍຈ່າຍຈັດຊື້ເພີ່ມຂຶ້ນ' : 'Increased purchasing spend')}
+          </p>
         </div>
 
-        {/* LDB Bank */}
+        {/* Active Suppliers & Bills */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ໂອນ ທະນາຄານ LDB' : 'LDB Bank Outflow'}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-blue-500">
+              {i18n.language === 'la' ? 'ຜູ້ສະໜອງ & ໃບບິນ' : 'Active Vendors & Bills'}
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
+            <Building2 className="w-4 h-4 text-blue-500" />
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
-            {Math.round(financialSummary.totalLdbSpent).toLocaleString()} ₭
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
+            {cogsAnalytics.activeSuppliersCount} <span className="text-xs font-normal text-slate-400">Vendors</span>
           </p>
-          <div className="flex items-center justify-between text-[9.5px] text-slate-400 font-bold">
-            <span>{i18n.language === 'la' ? 'ຈ່າຍຜ່ານ LDB Trust' : 'LDB Bank Transfer'}</span>
-            <span className="text-blue-500 font-mono">
-              {financialSummary.grandTotalSpent > 0 ? ((financialSummary.totalLdbSpent / financialSummary.grandTotalSpent) * 100).toFixed(0) : 0}%
-            </span>
-          </div>
+          <p className="text-[9px] text-slate-400 font-bold uppercase">
+            {cogsAnalytics.uniqueBillsCount} Procurement Invoices
+          </p>
         </div>
 
       </div>
 
-      {/* ================= 3. EXECUTIVE FINANCIAL REPORT (ROI, Margin, Revenue, Net Profit) ================= */}
-      <div className="bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-4">
+      {/* ================= 3. COGS COMPARISON CHART (THIS MONTH VS LAST MONTH) ================= */}
+      <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-3">
           <div>
-            <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-emerald-500" />
-              <span>{i18n.language === 'la' ? 'ບົດລາຍງານປະສິດທິພາບການເງິນ (Financial Performance Report)' : 'Financial KPIs & Performance'}</span>
+              <span>{i18n.language === 'la' ? 'ເສັ້ນກຣາຟ COGS: ປຽບທຽບຍອດຊື້ວັດຖຸດິບ ເດືອນນີ້ ທຽບ ເດືອນກ່ອນ' : 'COGS Trend: This Month vs Last Month'}</span>
             </h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
-              {i18n.language === 'la' 
-                ? 'ຄິດໄລ່ຍອດຂາຍ, ຕົ້ນທຶນວັດຖຸດິບ (Purchasing), ຄ່າໃຊ້ຈ່າຍບໍລິຫານ ແລະ ກຳໄລສຸດທິ' 
-                : 'Live Profitability, Gross Margin, and Estimated ROI Analytics'}
+            <p className="text-[9.5px] text-slate-400 font-bold uppercase mt-0.5">
+              Day-by-Day Procurement Comparison (Day 1 - 31)
             </p>
           </div>
 
-          <span className="px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-mono font-black w-fit">
-            {timeframeMode === 'month' ? '📅 Monthly KPI' : '🌐 All-Time KPI'}
-          </span>
+          <div className="flex gap-4 text-[9px] font-black uppercase">
+            <span className="flex items-center gap-1 text-emerald-500">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span> {cogsAnalytics.currentMonthLabel} (ເດືອນນີ້)
+            </span>
+            <span className="flex items-center gap-1 text-slate-400">
+              <span className="w-2 h-2 rounded-full bg-slate-400"></span> {cogsAnalytics.lastMonthLabel} (ເດືອນກ່ອນ)
+            </span>
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          
-          {/* Total Revenue */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
-              {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Total Revenue'}
-            </span>
-            <p className="text-lg font-black font-mono text-emerald-600 dark:text-emerald-400">
-              {Math.round(financialSummary.totalRevenue).toLocaleString()} ₭
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">Recorded from Sales</p>
-          </div>
-
-          {/* Purchasing (COGS) */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
-              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
-            </span>
-            <p className="text-lg font-black font-mono text-red-500 dark:text-red-400">
-              {Math.round(financialSummary.totalPurchasing).toLocaleString()} ₭
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">Raw Material Purchases</p>
-          </div>
-
-          {/* Gross Margin % */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-              <Percent className="w-3.5 h-3.5 text-blue-500" />
-              {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ (Gross Margin)' : 'Gross Margin'}
-            </span>
-            <p className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
-              {financialSummary.grossMarginPercent.toFixed(1)}%
-            </p>
-            <p className="text-[9px] text-slate-400 font-medium">
-              GP: {Math.round(financialSummary.grossProfit).toLocaleString()} ₭
-            </p>
-          </div>
-
-          {/* Net Profit */}
-          <div className={`p-4 rounded-2xl border space-y-1 ${
-            financialSummary.netProfit >= 0 
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
-              : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
-          }`}>
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
-              {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
-            </span>
-            <p className="text-lg font-black font-mono">
-              {Math.round(financialSummary.netProfit).toLocaleString()} ₭
-            </p>
-            <p className="text-[9px] opacity-80 font-medium">After all OPEX & Purchasing</p>
-          </div>
-
-          {/* Estimated ROI */}
-          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 space-y-1">
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
-              {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI (Est. ROI)' : 'Estimated ROI'}
-            </span>
-            <p className="text-lg font-black font-mono">
-              {financialSummary.estimatedROI.toFixed(1)}%
-            </p>
-            <p className="text-[9px] opacity-80 font-medium">Return on Total Cost Invested</p>
-          </div>
-
+        <div className="h-[240px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={cogsAnalytics.chartData}>
+              <defs>
+                <linearGradient id="thisMonthGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.25}/>
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
+              <XAxis dataKey="day" tick={{fontSize: 9}} axisLine={false} tickLine={false} />
+              <YAxis hide />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', color: '#fff', border: 'none' }}
+                formatter={(val: number, name: string) => [
+                  `${Number(val || 0).toLocaleString()} ₭`,
+                  name === 'thisMonth' ? cogsAnalytics.currentMonthLabel : cogsAnalytics.lastMonthLabel
+                ]}
+                labelFormatter={(label) => `Day ${label}`}
+              />
+              <Area 
+                type="monotone" 
+                dataKey="lastMonth" 
+                stroke="#94a3b8" 
+                strokeWidth={2} 
+                strokeDasharray="4 4" 
+                fill="transparent" 
+                name="lastMonth" 
+              />
+              <Area 
+                type="monotone" 
+                dataKey="thisMonth" 
+                stroke="#10b981" 
+                strokeWidth={3} 
+                fill="url(#thisMonthGrad)" 
+                name="thisMonth" 
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
@@ -934,14 +846,14 @@ export default function Suppliers() {
         } : null}
       />
 
-      {/* ================= 4. MAIN ENTRY FORM (LEFT) & ACTIVE FEED (RIGHT) ================= */}
+      {/* ================= 4. MAIN ENTRY FORM & FEED ROW ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* LEFT: FLEXIBLE ENTRY FORM (Single Item OR Multi-Item Batch) */}
+        {/* LEFT: BILL ENTRY FORM (5 Cols) */}
         <div className="xl:col-span-5 space-y-6">
           <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
             
-            {/* Header + Mode Toggle Switch */}
+            {/* Header + Mode Toggle */}
             <div className="flex justify-between items-start border-b border-slate-100 dark:border-white/10 pb-4">
               <div>
                 <span className="px-2.5 py-1 bg-primary/10 dark:bg-blue-400/20 text-primary dark:text-blue-300 rounded-full text-[9px] font-black uppercase tracking-wider">
@@ -949,11 +861,11 @@ export default function Suppliers() {
                 </span>
                 <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2 mt-1">
                   <Receipt className="w-4 h-4 text-emerald-500" />
-                  <span>{i18n.language === 'la' ? 'ບັນທຶກລາຍຈ່າຍ / ໃບບິນ' : 'Record Procurement & Expense'}</span>
+                  <span>{i18n.language === 'la' ? 'ບັນທຶກໃບບິນຈັດຊື້' : 'Record Procurement Bill'}</span>
                 </h3>
               </div>
 
-              {/* SWITCH ENTRY MODE: Single vs Multi-Item */}
+              {/* Mode Switch: Single vs Multi-Item */}
               <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
                 <button
                   type="button"
@@ -987,7 +899,7 @@ export default function Suppliers() {
 
             <form onSubmit={handleSaveBillBatch} className="space-y-4">
               
-              {/* Row: Date, Time & Bill No */}
+              {/* Row: Date, Time & Auto Bill No */}
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
@@ -1025,8 +937,6 @@ export default function Suppliers() {
 
               {/* Row: Supplier, Category & Payment Method */}
               <div className="grid grid-cols-3 gap-2">
-                
-                {/* 1. Supplier */}
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400">
                     {i18n.language === 'la' ? 'ຜູ້ສະໜອງ' : 'Supplier'}
@@ -1046,11 +956,10 @@ export default function Suppliers() {
                   </select>
                 </div>
 
-                {/* 2. Category */}
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400 flex items-center gap-1">
                     <Tag className="w-3 h-3 text-emerald-500" />
-                    <span>{i18n.language === 'la' ? 'ປະເພດລາຍການ' : 'Category'}</span>
+                    <span>Category</span>
                   </label>
                   <select 
                     className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
@@ -1063,16 +972,14 @@ export default function Suppliers() {
                     <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
                     <option value="operation">⚙️ Operation (ດຳເນີນງານ)</option>
                     <option value="admin">💼 Admin (ບໍລິຫານ)</option>
-                    <option value="sales">📈 Sales (ຍອດຂາຍ/ລາຍຮັບ)</option>
                     <option value="other">📦 Other (ອື່ນໆ)</option>
                   </select>
                 </div>
 
-                {/* 3. Payment Method */}
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-500 dark:text-slate-400 flex items-center gap-1">
                     <Wallet className="w-3 h-3 text-blue-500" />
-                    <span>{i18n.language === 'la' ? 'ຊ່ອງທາງຈ່າຍ' : 'Paid Via'}</span>
+                    <span>Paid Via</span>
                   </label>
                   <select 
                     className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] font-bold outline-none text-slate-800 dark:text-white cursor-pointer"
@@ -1085,7 +992,6 @@ export default function Suppliers() {
                     <option value="LDB">🏦 LDB (ທະນາຄານ)</option>
                   </select>
                 </div>
-
               </div>
 
               {/* Currency & Exchange Rate */}
@@ -1124,7 +1030,7 @@ export default function Suppliers() {
                 </div>
               </div>
 
-              {/* 🖼️ RECEIPT IMAGE UPLOAD (WITH DRAG & DROP & CTRL+V PASTE SUPPORT) */}
+              {/* 🖼️ RECEIPT IMAGE UPLOAD (DRAG & DROP, CTRL+V PASTE) */}
               <div 
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -1138,7 +1044,7 @@ export default function Suppliers() {
                 <div className="flex justify-between items-center">
                   <span className="text-[9.5px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                     <ImageIcon className="w-3.5 h-3.5 text-blue-500" />
-                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Drop & Ctrl+V Paste)' : 'Receipt Image (Drop or Ctrl+V)'}</span>
+                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Drop / Ctrl+V)' : 'Receipt Photo (Drop / Ctrl+V)'}</span>
                   </span>
                   {billImageBase64 && (
                     <button
@@ -1169,7 +1075,10 @@ export default function Suppliers() {
                       type="file"
                       ref={fileInputRef}
                       accept="image/*"
-                      onChange={handleManualFileInput}
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) processImageFile(file);
+                      }}
                       className="hidden"
                       id="supplier-bill-upload"
                     />
@@ -1184,14 +1093,14 @@ export default function Suppliers() {
                           : (i18n.language === 'la' ? 'ຄລິກເລືອກຮູບ ຫຼື ລາກຮູບມາໃສ່' : 'Click to upload or Drag & Drop photo')}
                       </span>
                       <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                        {i18n.language === 'la' ? '📋 ຫຼື ກັອບປີ້ແລ້ວກົດ Ctrl + V ວາງໄດ້ເລີຍ' : '📋 Or paste image directly with Ctrl + V'}
+                        📋 Or paste image directly with Ctrl + V
                       </p>
                     </label>
                   </div>
                 )}
               </div>
 
-              {/* Items List (Single or Multi-item) */}
+              {/* Items List */}
               <div className="space-y-3 pt-2">
                 <div className="flex justify-between items-center">
                   <span className="text-[10.5px] font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-1.5">
@@ -1396,41 +1305,17 @@ export default function Suppliers() {
                 ) : (
                   <Save className="w-4 h-4" />
                 )}
-                <span>{saveLoading ? 'SAVING...' : `ບັນທຶກລາຍຈ່າຍ (${generatedBillNo})`}</span>
+                <span>{saveLoading ? 'SAVING...' : `ບັນທຶກໃບບິນຈັດຊື້ (${generatedBillNo})`}</span>
               </button>
             </form>
           </div>
         </div>
 
-        {/* RIGHT: PRICING & PROCUREMENT INDEX FEED */}
+        {/* RIGHT: PRICING & PROCUREMENT INDEX FEED (7 Cols) */}
         <div className="xl:col-span-7 space-y-6">
 
-          {/* Quick Chart */}
-          <div className="high-density-card p-0 flex flex-col overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
-            <div className="p-3.5 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/5 flex justify-between items-center">
-              <h4 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
-                <BarChart3 className="w-3.5 h-3.5 text-primary" />
-                <span>ດັດຊະນີລາຄາ 10 ລາຍການລ່າສຸດ (Recent Pricing Feed)</span>
-              </h4>
-            </div>
-            <div className="p-4 h-[160px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={lastTenPrices}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" opacity={0.5} />
-                  <XAxis dataKey="supplier" tick={{fontSize: 9, fontWeight: 700}} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', fontWeight: 800, color: '#fff' }}
-                    formatter={(val: number) => [`${val.toLocaleString()} ₭`, 'Total LAK']}
-                  />
-                  <Bar dataKey="totalLAK" fill="#3b82f6" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Records Table */}
-          <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
+          {/* Active Ledger Table */}
+          <div className="high-density-card p-0 flex flex-col min-h-[550px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
             {/* Header controls */}
             <div className="p-4 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-white/5 flex flex-wrap justify-between items-center gap-3 sticky top-0 z-10 backdrop-blur-md">
@@ -1440,7 +1325,7 @@ export default function Suppliers() {
                 </h3>
                 <button 
                   onClick={handleExport}
-                  className="flex items-center gap-1 text-[9px] font-black uppercase text-blue-500 hover:text-blue-600 transition-colors"
+                  className="flex items-center gap-1 text-[9px] font-black uppercase text-blue-500 hover:text-blue-600 transition-colors cursor-pointer"
                 >
                   <Download className="w-3 h-3" />
                   Excel
@@ -1452,14 +1337,14 @@ export default function Suppliers() {
                   <input 
                     type="date" 
                     value={selectedFilterDate}
-                    onChange={e => setSelectedFilterDate(e.target.value)}
-                    className="text-[10px] font-bold font-mono py-0.5 px-1 outline-none bg-transparent text-slate-800 dark:text-white"
+                    onChange={e => setSelectedFilterDate(toStandardDateString(e.target.value))}
+                    className="text-[10px] font-bold font-mono py-0.5 px-1 outline-none bg-transparent text-slate-800 dark:text-white cursor-pointer"
                   />
                   {selectedFilterDate && (
                     <button 
                       type="button"
                       onClick={() => setSelectedFilterDate('')}
-                      className="px-1.5 py-0.5 text-[8px] font-black uppercase bg-red-50 text-red-500 rounded-md"
+                      className="px-1.5 py-0.5 text-[8px] font-black uppercase bg-red-50 text-red-500 rounded-md cursor-pointer"
                     >
                       All
                     </button>
@@ -1469,7 +1354,7 @@ export default function Suppliers() {
                 <div className="relative">
                   <input 
                     type="text" 
-                    placeholder="Search product, #bill, category..." 
+                    placeholder="Search product, #bill..." 
                     className="text-[10px] font-bold py-1.5 pl-7 pr-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-xl outline-none focus:ring-1 focus:ring-primary w-44 shadow-xs"
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
@@ -1505,7 +1390,7 @@ export default function Suppliers() {
                         supplierName.toLowerCase().includes(filter.toLowerCase()) ||
                         billNumber.toLowerCase().includes(filter.toLowerCase()) ||
                         catName.toLowerCase().includes(filter.toLowerCase());
-                      const matchesDate = !selectedFilterDate || p.date === selectedFilterDate;
+                      const matchesDate = !selectedFilterDate || toStandardDateString(p.date || p.createdAt) === selectedFilterDate;
                       return matchesSearch && matchesDate;
                     })
                     .map(price => {
@@ -1526,7 +1411,7 @@ export default function Suppliers() {
                               </span>
                             )}
                             <span className="text-[11px] font-bold text-slate-800 dark:text-white block">
-                              {price.date || format(price.createdAt?.toDate() || new Date(), 'dd/MM/yyyy')}
+                              {toStandardDateString(price.date || price.createdAt)}
                             </span>
                           </td>
 
@@ -1554,7 +1439,7 @@ export default function Suppliers() {
                                 ? 'bg-emerald-500/10 text-emerald-600' 
                                 : price.paymentMethod === 'Onepay' 
                                   ? 'bg-red-500/10 text-red-500' 
-                                  : 'bg-blue-500/10 text-blue-500'
+                                  : 'bg-blue-500/10 text-blue-600'
                             }`}>
                               {price.paymentMethod || 'Cash'}
                             </span>
@@ -1591,11 +1476,11 @@ export default function Suppliers() {
                                   setEditingPriceId(price.id);
                                   setEditPriceData({
                                     ...price,
-                                    date: price.date || format(new Date(), 'yyyy-MM-dd'),
+                                    date: toStandardDateString(price.date || price.createdAt),
                                     unit: price.unit || item?.unit || 'UNIT'
                                   });
                                 }}
-                                className="p-1.5 text-slate-400 hover:text-blue-500"
+                                className="p-1.5 text-slate-400 hover:text-blue-500 cursor-pointer"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
@@ -1605,7 +1490,7 @@ export default function Suppliers() {
                                   setPendingAction(price.id);
                                   setShowApprovalModal(true);
                                 }}
-                                className="p-1.5 text-slate-400 hover:text-red-500"
+                                className="p-1.5 text-slate-400 hover:text-red-500 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1630,9 +1515,9 @@ export default function Suppliers() {
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h4 className="text-sm font-black text-slate-800 dark:text-white uppercase flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-emerald-500" />
-                <span>Attached Receipt View</span>
+                <span>Attached Receipt Document</span>
               </h4>
-              <button type="button" onClick={() => setPreviewImageUrl(null)}>
+              <button type="button" onClick={() => setPreviewImageUrl(null)} className="p-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl cursor-pointer">
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
@@ -1653,12 +1538,12 @@ export default function Suppliers() {
                 <button 
                   type="button"
                   onClick={() => setShowMergeModal(true)}
-                  className="mt-1 text-[9px] font-black text-amber-500 bg-amber-500/10 px-2.5 py-0.5 rounded-full"
+                  className="mt-1 text-[9px] font-black text-amber-500 bg-amber-500/10 px-2.5 py-0.5 rounded-full cursor-pointer"
                 >
                   🔄 Merge Duplicates
                 </button>
               </div>
-              <button type="button" onClick={() => setShowProductManager(false)}>
+              <button type="button" onClick={() => setShowProductManager(false)} className="p-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl cursor-pointer">
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
@@ -1674,10 +1559,10 @@ export default function Suppliers() {
                           value={editProductName}
                           onChange={e => setEditProductName(e.target.value)}
                         />
-                        <button type="button" onClick={() => handleUpdateProductName(p.id)} className="p-1.5 bg-emerald-500 text-white rounded-lg">
+                        <button type="button" onClick={() => handleUpdateProductName(p.id)} className="p-1.5 bg-emerald-500 text-white rounded-lg cursor-pointer">
                           <Check className="w-3.5 h-3.5" />
                         </button>
-                        <button type="button" onClick={() => setEditingProduct(null)} className="p-1.5 bg-slate-200 dark:bg-white/10 rounded-lg">
+                        <button type="button" onClick={() => setEditingProduct(null)} className="p-1.5 bg-slate-200 dark:bg-white/10 rounded-lg cursor-pointer">
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -1690,10 +1575,10 @@ export default function Suppliers() {
                   </div>
                   {editingProduct?.id !== p.id && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100">
-                      <button onClick={() => { setEditingProduct(p); setEditProductName(p.name); setEditProductUnit(p.unit || ''); }} className="p-1.5 text-blue-500">
+                      <button onClick={() => { setEditingProduct(p); setEditProductName(p.name); setEditProductUnit(p.unit || ''); }} className="p-1.5 text-blue-500 cursor-pointer">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 text-red-500">
+                      <button onClick={() => handleDeleteProduct(p.id)} className="p-1.5 text-red-500 cursor-pointer">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -1711,7 +1596,7 @@ export default function Suppliers() {
           <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 space-y-3">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-2">
               <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">Merge Duplicates</h3>
-              <button type="button" onClick={() => setShowMergeModal(false)}><X className="w-4 h-4 text-slate-400" /></button>
+              <button type="button" onClick={() => setShowMergeModal(false)} className="cursor-pointer"><X className="w-4 h-4 text-slate-400" /></button>
             </div>
             <div className="space-y-3 text-xs">
               <div>
@@ -1734,8 +1619,8 @@ export default function Suppliers() {
               </div>
             </div>
             <div className="flex gap-2 pt-2">
-              <button type="button" onClick={() => setShowMergeModal(false)} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold">Cancel</button>
-              <button type="button" disabled={isMerging || !mergeSourceId || !mergeTargetId} onClick={handleMergeProducts} className="flex-1 py-2 bg-amber-500 text-white rounded-xl text-xs font-bold">Merge</button>
+              <button type="button" onClick={() => setShowMergeModal(false)} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button type="button" disabled={isMerging || !mergeSourceId || !mergeTargetId} onClick={handleMergeProducts} className="flex-1 py-2 bg-amber-500 text-white rounded-xl text-xs font-bold cursor-pointer">Merge</button>
             </div>
           </div>
         </div>
@@ -1747,7 +1632,7 @@ export default function Suppliers() {
           <div className="bg-white dark:bg-[#073069] w-full max-w-md rounded-3xl p-6 shadow-2xl border border-white/10 space-y-3">
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-2">
               <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white">Modify Entry</h3>
-              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }}><X className="w-4 h-4 text-slate-400" /></button>
+              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }} className="cursor-pointer"><X className="w-4 h-4 text-slate-400" /></button>
             </div>
             <div className="space-y-2 text-xs">
               <div>
@@ -1763,7 +1648,6 @@ export default function Suppliers() {
                     <option value="salary">Salary</option>
                     <option value="operation">Operation</option>
                     <option value="admin">Admin</option>
-                    <option value="sales">Sales</option>
                     <option value="other">Other</option>
                   </select>
                 </div>
@@ -1788,8 +1672,8 @@ export default function Suppliers() {
               </div>
             </div>
             <div className="flex gap-2 pt-2">
-              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold">Cancel</button>
-              <button type="button" disabled={saveLoading} onClick={handleUpdatePrice} className="flex-1 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold">Update</button>
+              <button type="button" onClick={() => { setEditingPriceId(null); setEditPriceData(null); }} className="flex-1 py-2 bg-slate-100 dark:bg-white/10 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button type="button" disabled={saveLoading} onClick={handleUpdatePrice} className="flex-1 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer">Update</button>
             </div>
           </div>
         </div>
