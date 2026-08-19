@@ -6,13 +6,13 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
-import { format, subDays, startOfMonth } from 'date-fns';
+import { format, subDays } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { 
-  Upload, Receipt, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
+  Upload, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
   Sparkles, Wallet, CreditCard, Building2, TrendingUp, DollarSign, 
   Calendar, Filter, PieChart, Percent, ArrowUpRight, ArrowDownRight, Tag,
-  Image as ImageIcon, CheckCircle2, ChevronLeft, ChevronRight
+  Image as ImageIcon, Edit3
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -23,33 +23,22 @@ import PinModal from './PinModal';
 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
-// 🛡️ 1. SMART DATE NORMALIZER (ແປງວັນທີທຸກຮູບແບບໃຫ້ເປັນ yyyy-MM-dd ສະເໝີ)
+// 🛡️ 1. SAFE DATE NORMALIZER (ຮອງຮັບທຸກຮູບແບບວັນທີ String, Timestamp, Date)
 const toStandardDateString = (raw: any): string => {
   if (!raw) return '';
   if (typeof raw === 'string') {
     const clean = raw.trim();
     if (clean.includes('T')) return clean.split('T')[0];
-    
-    // Check yyyy-MM-dd or yyyy-M-d
     if (clean.includes('-')) {
       const parts = clean.split('-');
       if (parts.length === 3) {
-        const y = parts[0];
-        const m = parts[1].padStart(2, '0');
-        const d = parts[2].padStart(2, '0');
-        return `${y}-${m}-${d}`;
+        return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
       }
     }
-    // Check dd/MM/yyyy or d/M/yyyy
     if (clean.includes('/')) {
       const parts = clean.split('/');
-      if (parts.length === 3) {
-        if (parts[2].length === 4) {
-          const y = parts[2];
-          const m = parts[1].padStart(2, '0');
-          const d = parts[0].padStart(2, '0');
-          return `${y}-${m}-${d}`;
-        }
+      if (parts.length === 3 && parts[2].length === 4) {
+        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
       }
     }
     return clean;
@@ -71,14 +60,13 @@ const toStandardDateString = (raw: any): string => {
   return '';
 };
 
-// 🛡️ 2. SAFE EXTRACTION FROM RECORD (ຖ້າບໍ່ມີ date ໃຫ້ດຶງຈາກ createdAt ແທນ)
-const getTxDateString = (tx: any): string => {
-  if (!tx) return '';
-  const fromDate = toStandardDateString(tx.date);
-  if (fromDate) return fromDate;
-  const fromCreated = toStandardDateString(tx.createdAt);
-  if (fromCreated) return fromCreated;
-  return '';
+// 🛡️ 2. SAFE NUMBER PARSER (ປ້ອງກັນ NaN ຫຼື String ຕິດຈຸດ)
+const parseAmount = (val: any): number => {
+  if (!val) return 0;
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  const clean = String(val).replace(/[^0-9.-]/g, '');
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
 };
 
 export default function Financials({ appConfig, selectedBranch }: { appConfig: any, selectedBranch?: string }) {
@@ -90,10 +78,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [loading, setLoading] = useState(true);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
-  // Timeframe View Mode: 'month' (This Month) vs 'all' (All-Time)
+  // Timeframe View Mode: 'month' vs 'all'
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
-  // Date View Filter State
+  // Date View State
   const [viewDate, setViewDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [showAllMonthRecords, setShowAllMonthRecords] = useState(false);
 
@@ -166,15 +154,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return 'Cash';
   };
 
-  // ================= 🖼️ RECEIPT HANDLER (DRAG & DROP, PASTE CTRL+V, MANUAL UPLOAD) =================
+  // Receipt Drag & Drop & Paste Handlers
   const processReceiptFile = (file: File) => {
     if (!file) return;
-
     if (file.size > 8 * 1024 * 1024) {
       alert(i18n.language === 'la' ? 'ຂະໜາດໄຟລ໌ໃຫຍ່ເກີນ 8MB' : 'File is larger than 8MB.');
       return;
     }
-
     const preview = URL.createObjectURL(file);
     setFormData(prev => ({
       ...prev,
@@ -184,32 +170,23 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     setDeleteReceipt(false);
   };
 
-  // Global Clipboard Paste (Ctrl + V)
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
-
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf('image') !== -1) {
           const blob = items[i].getAsFile();
           if (blob) {
-            const pastedFile = new File(
-              [blob], 
-              `receipt-${Date.now()}.png`, 
-              { type: 'image/png' }
-            );
+            const pastedFile = new File([blob], `receipt-${Date.now()}.png`, { type: 'image/png' });
             processReceiptFile(pastedFile);
             break;
           }
         }
       }
     };
-
     window.addEventListener('paste', handlePaste);
-    return () => {
-      window.removeEventListener('paste', handlePaste);
-    };
+    return () => window.removeEventListener('paste', handlePaste);
   }, []);
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -228,7 +205,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingReceipt(false);
-
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       processReceiptFile(files[0]);
@@ -241,7 +217,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       await uploadBytes(fileRef, file);
       return await getDownloadURL(fileRef);
     }
-
     try {
       const compressedFile = await imageCompression(file, { maxSizeMB: 0.3, maxWidthOrHeight: 1200 });
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${compressedFile.name}`);
@@ -254,21 +229,18 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     }
   };
 
-  // ================= 🔄 FIRESTORE REAL-TIME SUBSCRIPTION (SAFE QUERY) =================
+  // Safe Realtime Subscription
   useEffect(() => {
     const branchId = selectedBranch || 'branch_1';
-    
-    // Fetch directly from collection without composite index dependency
     const qAll = query(collection(db, 'transactions'));
 
     const unsubscribeAll = onSnapshot(qAll, (snap) => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       const branchFiltered = all.filter((tx: any) => (tx.branchId || 'branch_1') === branchId);
-      
-      // Sort client-side by date and time safely
+
       branchFiltered.sort((a: any, b: any) => {
-        const dateA = getTxDateString(a);
-        const dateB = getTxDateString(b);
+        const dateA = toStandardDateString(a.date || a.createdAt);
+        const dateB = toStandardDateString(b.date || b.createdAt);
         if (dateA !== dateB) return dateB.localeCompare(dateA);
         return String(b.time || '').localeCompare(String(a.time || ''));
       });
@@ -280,9 +252,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       setLoading(false);
     });
 
-    return () => {
-      unsubscribeAll();
-    };
+    return () => unsubscribeAll();
   }, [selectedBranch]);
 
   // Load products and supplierPrices
@@ -299,25 +269,26 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, []);
 
-  // ⚡ 2. INSTANT FILTERED TRANSACTIONS (CRASH-PROOF)
+  // Filtered Daily Transactions
   const dailyTransactions = useMemo(() => {
     const targetDate = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
     
-    // If showAllMonthRecords is active, show all records belonging to the selected month
     if (showAllMonthRecords && targetDate) {
       const [year, month] = targetDate.split('-');
       const monthPrefix = `${year}-${month}`;
       return allTransactions.filter((tx: any) => {
-        const d = getTxDateString(tx);
+        const d = toStandardDateString(tx.date || tx.createdAt);
         return d.startsWith(monthPrefix);
       });
     }
 
-    // Default: Filter exact day
-    return allTransactions.filter((tx: any) => getTxDateString(tx) === targetDate);
+    return allTransactions.filter((tx: any) => {
+      const d = toStandardDateString(tx.date || tx.createdAt);
+      return d === targetDate;
+    });
   }, [allTransactions, viewDate, showAllMonthRecords]);
 
-  // ⚡ 3. 7-DAY IN-MEMORY CHART (ZERO LATENCY, NEVER CRASHES)
+  // 7-Day Chart computed in-memory
   const weeklyData = useMemo(() => {
     const standardDate = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
     let validBase = new Date();
@@ -333,13 +304,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return Array.from({ length: 7 }, (_, i) => {
       const dObj = subDays(validBase, 6 - i);
       const targetDate = format(dObj, 'yyyy-MM-dd');
-      const dayTxs = allTransactions.filter(tx => getTxDateString(tx) === targetDate);
+      const dayTxs = allTransactions.filter(tx => toStandardDateString(tx.date || tx.createdAt) === targetDate);
 
       let income = 0;
       let expenses = 0;
 
       dayTxs.forEach(tx => {
-        const amt = Number(tx.amount) || 0;
+        const amt = parseAmount(tx.amount);
         if (tx.type === 'income' || String(tx.category || '').toLowerCase() === 'sales') {
           income += amt;
         } else {
@@ -364,14 +335,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     }
   }, [viewDate]);
 
-  // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
+  // Financial KPIs Calculation
   const financialSummary = useMemo(() => {
     const now = new Date();
     const currentMonthPrefix = format(now, 'yyyy-MM');
 
     const activeList = allTransactions.filter(tx => {
       if (timeframeMode === 'all') return true;
-      const dStr = getTxDateString(tx);
+      const dStr = toStandardDateString(tx.date || tx.createdAt);
       if (!dStr) return true;
       return dStr.startsWith(currentMonthPrefix);
     });
@@ -388,7 +359,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     let ldbExpense = 0;
 
     activeList.forEach(tx => {
-      const amt = Number(tx.amount) || 0;
+      const amt = parseAmount(tx.amount);
       const ch = normalizePaymentChannel(tx.source);
       const isIncome = tx.type === 'income' || String(tx.category || '').toLowerCase() === 'sales';
 
@@ -458,7 +429,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   }, [allTransactions]);
 
   const supplierBillsForSelectedDate = useMemo(() => {
-    const selectedDatePrices = supplierPrices.filter(p => getTxDateString(p) === pullDate);
+    const selectedDatePrices = supplierPrices.filter(p => toStandardDateString(p.date) === pullDate);
 
     const isOther = (name: string) => {
       const n = String(name || '').trim().toUpperCase();
@@ -476,10 +447,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     });
 
     const itemTotalLAK = (item: any): number => {
-      if (item.totalPriceLAK !== undefined) return Number(item.totalPriceLAK || 0);
+      if (item.totalPriceLAK !== undefined) return parseAmount(item.totalPriceLAK);
       return item.currency === 'LAK'
-        ? Number(item.priceOriginal || 0) * (Number(item.quantity) || 1)
-        : Number(item.priceOriginal || 0) * Number(item.exchangeRate || 1) * (Number(item.quantity) || 1);
+        ? parseAmount(item.priceOriginal) * (parseAmount(item.quantity) || 1)
+        : parseAmount(item.priceOriginal) * parseAmount(item.exchangeRate || 1) * (parseAmount(item.quantity) || 1);
     };
 
     const bills: any[] = [];
@@ -596,7 +567,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
       const txData = {
         type: formData.type,
-        amount: formData.amount,
+        amount: parseAmount(formData.amount),
         category: formData.category,
         description: formData.description,
         source: formData.source,
@@ -653,10 +624,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
   const handleEditConfirmed = () => {
     if (!txToEdit) return;
-    const cleanDate = getTxDateString(txToEdit) || format(new Date(), 'yyyy-MM-dd');
+    const cleanDate = toStandardDateString(txToEdit.date || txToEdit.createdAt) || format(new Date(), 'yyyy-MM-dd');
     setFormData({
       type: txToEdit.type,
-      amount: txToEdit.amount,
+      amount: parseAmount(txToEdit.amount),
       category: txToEdit.category || 'Purchasing',
       description: txToEdit.description || '',
       source: normalizePaymentChannel(txToEdit.source),
@@ -665,7 +636,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       date: cleanDate,
       time: txToEdit.time || format(new Date(), 'HH:mm')
     });
-    setDisplayAmount(txToEdit.amount.toLocaleString());
+    setDisplayAmount(parseAmount(txToEdit.amount).toLocaleString());
     setIsEditing(true);
     setEditingId(txToEdit.id);
     setOldTxData(txToEdit);
@@ -720,10 +691,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const handleExport = () => {
     const headers = ['Date', 'Time', 'Type', 'Amount (LAK)', 'Category', 'Payment Channel', 'Description', 'User'];
     const rows = dailyTransactions.map(tx => [
-      getTxDateString(tx),
+      toStandardDateString(tx.date || tx.createdAt),
       tx.time || '',
       tx.type,
-      tx.amount,
+      parseAmount(tx.amount),
       tx.category,
       normalizePaymentChannel(tx.source),
       tx.description || '',
@@ -1014,7 +985,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     required
                     className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
                     value={formData.date}
-                    onChange={e => setFormData(prev => ({...prev, date: e.target.value}))}
+                    onChange={e => {
+                      const val = toStandardDateString(e.target.value);
+                      if (val) setFormData(prev => ({...prev, date: val}));
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
@@ -1087,7 +1061,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 />
               </div>
 
-              {/* 🖼️ RECEIPT BOX */}
+              {/* RECEIPT BOX */}
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -1218,9 +1192,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                           onChange={e => setBillPaymentSources(prev => ({...prev, [bill.id]: e.target.value as PaymentChannel}))}
                           className="h-8 px-2 rounded-lg bg-white dark:bg-slate-800 border text-[10px] font-bold cursor-pointer"
                         >
-                          <option value="Onepay">📱 OnePay</option>
-                          <option value="Cash">💵 Cash</option>
-                          <option value="LDB">🏦 LDB</option>
+                          <option value="Onepay">OnePay</option>
+                          <option value="Cash">Cash</option>
+                          <option value="LDB">LDB</option>
                         </select>
                         <button
                           type="button"
@@ -1274,7 +1248,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </div>
           </div>
 
-          {/* Live Transaction Ledger Table with Navigation Shortcuts */}
+          {/* Live Transaction Ledger Table with Plain Text Quick Buttons (No icons) */}
           <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
             <div className="p-4 border-b border-slate-100 dark:border-white/10 flex flex-col gap-3">
@@ -1309,7 +1283,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </div>
               </div>
 
-              {/* ⚡ Quick Date Jump Shortcuts (ກົດເລືອກມື້ໄດ້ໄວ 100%) */}
+              {/* Plain Text Navigation Buttons (NO EMOJIS / NO ICONS) */}
               <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100 dark:border-white/5 text-[9.5px]">
                 <button
                   type="button"
@@ -1317,21 +1291,24 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     setViewDate(format(new Date(), 'yyyy-MM-dd'));
                     setShowAllMonthRecords(false);
                   }}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer transition-all"
                 >
-                  {i18n.language === 'la' ? '⚡ ມື້ນີ້' : '⚡ Today'}
+                  {i18n.language === 'la' ? 'ມື້ນີ້' : 'Today'}
                 </button>
 
                 <button
                   type="button"
                   onClick={() => {
-                    const firstDay = format(startOfMonth(new Date()), 'yyyy-MM-dd');
+                    // Safe 1st day of active month string (No Date Object Bug)
+                    const activeDateStr = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
+                    const [y, m] = activeDateStr.split('-');
+                    const firstDay = `${y}-${m}-01`;
                     setViewDate(firstDay);
                     setShowAllMonthRecords(false);
                   }}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer transition-all"
                 >
-                  {i18n.language === 'la' ? '📅 ຕົ້ນເດືອນ (1st)' : '📅 1st of Month'}
+                  {i18n.language === 'la' ? 'ຕົ້ນເດືອນ' : '1st of Month'}
                 </button>
 
                 <button
@@ -1341,7 +1318,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     setViewDate(yest);
                     setShowAllMonthRecords(false);
                   }}
-                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer transition-all"
                 >
                   {i18n.language === 'la' ? 'ມື້ວານ' : 'Yesterday'}
                 </button>
@@ -1349,15 +1326,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 <button
                   type="button"
                   onClick={() => setShowAllMonthRecords(prev => !prev)}
-                  className={`px-2.5 py-1 rounded-lg font-black uppercase transition-all cursor-pointer ${
+                  className={`px-3 py-1 rounded-lg font-black uppercase transition-all cursor-pointer ${
                     showAllMonthRecords 
                       ? 'bg-blue-600 text-white shadow-xs' 
                       : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
                   }`}
                 >
                   {showAllMonthRecords 
-                    ? (i18n.language === 'la' ? '✓ ກຳລັງສະແດງທັງເດືອນ' : '✓ Showing Entire Month') 
-                    : (i18n.language === 'la' ? '👁️ ເບິ່ງທັງໝົດໃນເດືອນນີ້' : '👁️ View Entire Month')}
+                    ? (i18n.language === 'la' ? 'ສະແດງທັງເດືອນ' : 'Showing Month') 
+                    : (i18n.language === 'la' ? 'ເບິ່ງທັງໝົດໃນເດືອນນີ້' : 'View Entire Month')}
                 </button>
               </div>
 
@@ -1369,13 +1346,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 const isInc = tx.type === 'income';
 
                 return (
-                  <div key={tx.id} className="p-3.5 flex justify-between items-center hover:bg-slate-50/80 dark:hover:bg-white/5 transition-all">
+                  <div key={tx.id || Math.random()} className="p-3.5 flex justify-between items-center hover:bg-slate-50/80 dark:hover:bg-white/5 transition-all">
                     <div className="flex items-center gap-3">
                       <div className={`w-1.5 h-8 rounded-full ${isInc ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                       <div>
                         <p className="text-xs font-bold text-slate-800 dark:text-white">{tx.category || 'Transaction'}</p>
                         <p className="text-[10px] text-slate-400">
-                          {getTxDateString(tx)} • {tx.time || ''} {tx.description ? `• ${tx.description}` : ''}
+                          {toStandardDateString(tx.date || tx.createdAt)} • {tx.time || ''} {tx.description ? `• ${tx.description}` : ''}
                         </p>
                       </div>
                     </div>
@@ -1389,7 +1366,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
                       <div className="text-right">
                         <p className={`text-xs font-mono font-black ${isInc ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                          {showPrivacy ? '••••••' : `${isInc ? '+' : '-'}${Number(tx.amount || 0).toLocaleString()} ₭`}
+                          {showPrivacy ? '••••••' : `${isInc ? '+' : '-'}${parseAmount(tx.amount).toLocaleString()} ₭`}
                         </p>
                         {tx.receiptUrl && (
                           <button 
