@@ -8,11 +8,12 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
 import { format, subDays } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Upload, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
   Sparkles, Wallet, CreditCard, Building2, TrendingUp, DollarSign, 
   Calendar, Filter, PieChart, Percent, ArrowUpRight, ArrowDownRight, Tag,
-  Image as ImageIcon, Edit3, Split
+  Image as ImageIcon, Edit3, Split, CheckCircle2, AlertCircle
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -23,7 +24,7 @@ import PinModal from './PinModal';
 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
-// 🛡️ 1. SAFE DATE NORMALIZER
+// 🛡️ Bulletproof Date Normalizer
 const toStandardDateString = (raw: any): string => {
   if (!raw) return '';
   if (typeof raw === 'string') {
@@ -60,7 +61,7 @@ const toStandardDateString = (raw: any): string => {
   return '';
 };
 
-// 🛡️ 2. SAFE NUMBER PARSER
+// 🛡️ Safe Number Parser
 const parseAmount = (val: any): number => {
   if (!val) return 0;
   if (typeof val === 'number') return isNaN(val) ? 0 : val;
@@ -72,6 +73,16 @@ const parseAmount = (val: any): number => {
 export default function Financials({ appConfig, selectedBranch }: { appConfig: any, selectedBranch?: string }) {
   const { t, i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // In-App Toast Notification State (ແທນ Browser Alert Popup)
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 2800);
+  };
 
   // Core Data States
   const [allTransactions, setAllTransactions] = useState<any[]>([]);
@@ -97,19 +108,19 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [approvalType, setApprovalType] = useState<'transaction' | 'bank' | null>(null);
   const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-  // Multi-Channel Split Income State (ແຍກບັນທຶກ 3 ຊ່ອງທາງ)
-  const [isSplitIncomeMode, setIsSplitIncomeMode] = useState(false);
-  const [splitCashAmount, setSplitCashAmount] = useState<number>(0);
-  const [splitOnepayAmount, setSplitOnepayAmount] = useState<number>(0);
-  const [splitLdbAmount, setSplitLdbAmount] = useState<number>(0);
+  // Payment Recording Mode: 'single' vs 'split'
+  const [channelMode, setChannelMode] = useState<'single' | 'split'>('single');
+  const [splitCashAmount, setSplitCashAmount] = useState<number | string>('');
+  const [splitOnepayAmount, setSplitOnepayAmount] = useState<number | string>('');
+  const [splitLdbAmount, setSplitLdbAmount] = useState<number | string>('');
 
-  // Form State
+  // Transaction Form State
   const [formData, setFormData] = useState({
     type: 'income' as 'income' | 'expense',
     amount: 0,
     category: 'Sales',
     description: '',
-    source: 'Cash' as PaymentChannel,
+    source: 'Onepay' as PaymentChannel,
     receipt: null as File | null,
     receiptPreviewUrl: '' as string,
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -164,7 +175,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const processReceiptFile = (file: File) => {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
-      alert(i18n.language === 'la' ? 'ຂະໜາດໄຟລ໌ໃຫຍ່ເກີນ 8MB' : 'File is larger than 8MB.');
+      showToast(i18n.language === 'la' ? 'ຂະໜາດໄຟລ໌ໃຫຍ່ເກີນ 8MB' : 'File is larger than 8MB.', 'error');
       return;
     }
     const preview = URL.createObjectURL(file);
@@ -174,6 +185,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       receiptPreviewUrl: preview
     }));
     setDeleteReceipt(false);
+    showToast(i18n.language === 'la' ? 'ແນບຮູບໃບບິນແລ້ວ' : 'Receipt attached', 'success');
   };
 
   useEffect(() => {
@@ -520,7 +532,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const totalAmount = Math.round(bill.totalPrice || 0);
 
       if (totalAmount <= 0) {
-        alert(i18n.language === 'la' ? 'ຍອດບິນຕ້ອງຫຼາຍກວ່າ 0 ₭' : 'Bill amount must be greater than 0');
+        showToast(i18n.language === 'la' ? 'ຍອດບິນຕ້ອງຫຼາຍກວ່າ 0 ₭' : 'Bill amount must be greater than 0', 'error');
         return;
       }
 
@@ -549,16 +561,16 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         branchId: selectedBranch || 'branch_1'
       });
 
-      alert(i18n.language === 'la' ? 'ດຶງລາຍຈ່າຍເຂົ້າບັນຊີສຳເລັດ!' : 'Imported successfully!');
+      showToast(i18n.language === 'la' ? `ດຶງລາຍຈ່າຍ ${bill.supplier} (${selectedSource}) ສຳເລັດ!` : 'Imported successfully!', 'success');
     } catch (err: any) {
       console.error(err);
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, 'error');
     } finally {
       setImportingBillId(null);
     }
   };
 
-  // Submit Transaction (Supports Single Entry AND Multi-Channel Split Income)
+  // Submit Transaction (Fast In-App Feedback)
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -573,26 +585,26 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const cleanDate = toStandardDateString(formData.date) || format(new Date(), 'yyyy-MM-dd');
       const timeStr = formData.time || format(new Date(), 'HH:mm');
 
-      // 🌟 MODE 1: MULTI-CHANNEL SPLIT INCOME (Cash + OnePay + LDB)
-      if (formData.type === 'income' && isSplitIncomeMode && !isEditing) {
+      // 🌟 MODE 1: SPLIT 3-CHANNELS ENTRY (Cash + OnePay + LDB)
+      if (channelMode === 'split' && !isEditing) {
         const cashVal = parseAmount(splitCashAmount);
         const onepayVal = parseAmount(splitOnepayAmount);
         const ldbVal = parseAmount(splitLdbAmount);
 
         const totalSplit = cashVal + onepayVal + ldbVal;
         if (totalSplit <= 0) {
-          alert(i18n.language === 'la' ? 'ກະລຸນາປ້ອນຍອດເງິນໃນຊ່ອງທາງໃດໜຶ່ງ (Cash, OnePay, ຫຼື LDB)' : 'Please enter an amount in at least one channel.');
+          showToast(i18n.language === 'la' ? 'ກະລຸນາປ້ອນຍອດເງິນໃນຊ່ອງທາງໃດໜຶ່ງ (Cash, OnePay, ຫຼື LDB)' : 'Please enter an amount in at least one channel.', 'error');
           setLoading(false);
           return;
         }
 
-        // Save Cash portion if > 0
+        // Save Cash portion
         if (cashVal > 0) {
           await addDoc(collection(db, 'transactions'), {
-            type: 'income',
+            type: formData.type,
             amount: cashVal,
-            category: formData.category || 'Sales',
-            description: formData.description ? `${formData.description} (ເງິນສົດ Cash)` : 'ລາຍຮັບເງິນສົດ (Cash)',
+            category: formData.category,
+            description: formData.description ? `${formData.description} (ເງິນສົດ Cash)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (Cash)`,
             source: 'Cash',
             receiptUrl,
             date: cleanDate,
@@ -605,13 +617,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           });
         }
 
-        // Save OnePay portion if > 0
+        // Save OnePay portion
         if (onepayVal > 0) {
           await addDoc(collection(db, 'transactions'), {
-            type: 'income',
+            type: formData.type,
             amount: onepayVal,
-            category: formData.category || 'Sales',
-            description: formData.description ? `${formData.description} (BCEL OnePay)` : 'ລາຍຮັບໂອນ (OnePay)',
+            category: formData.category,
+            description: formData.description ? `${formData.description} (BCEL OnePay)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (OnePay)`,
             source: 'Onepay',
             receiptUrl,
             date: cleanDate,
@@ -624,13 +636,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           });
         }
 
-        // Save LDB portion if > 0
+        // Save LDB portion
         if (ldbVal > 0) {
           await addDoc(collection(db, 'transactions'), {
-            type: 'income',
+            type: formData.type,
             amount: ldbVal,
-            category: formData.category || 'Sales',
-            description: formData.description ? `${formData.description} (ທະນາຄານ LDB)` : 'ລາຍຮັບໂອນ (LDB)',
+            category: formData.category,
+            description: formData.description ? `${formData.description} (ທະນາຄານ LDB)` : `${formData.type === 'income' ? 'ລາຍຮັບ' : 'ລາຍຈ່າຍ'} (LDB)`,
             source: 'LDB',
             receiptUrl,
             date: cleanDate,
@@ -643,15 +655,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           });
         }
 
-        alert(i18n.language === 'la' 
-          ? `ບັນທຶກລາຍຮັບແຍກ 3 ຊ່ອງທາງລວມ ${totalSplit.toLocaleString()} ₭ ສຳເລັດແລ້ວ!` 
-          : `Split income saved successfully (Total: ${totalSplit.toLocaleString()} ₭)!`);
+        showToast(i18n.language === 'la' 
+          ? `ບັນທຶກແຍກ 3 ຊ່ອງທາງລວມ ${totalSplit.toLocaleString()} ₭ ສຳເລັດ!` 
+          : `Split transaction saved (${totalSplit.toLocaleString()} ₭)!`, 'success');
 
-        setSplitCashAmount(0);
-        setSplitOnepayAmount(0);
-        setSplitLdbAmount(0);
+        setSplitCashAmount('');
+        setSplitOnepayAmount('');
+        setSplitLdbAmount('');
       } 
-      // 🌟 MODE 2: SINGLE CHANNEL ENTRY (Standard)
+      // 🌟 MODE 2: SINGLE PAYMENT CHANNEL ENTRY
       else {
         const txData = {
           type: formData.type,
@@ -672,13 +684,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
         if (isEditing && editingId) {
           await setDoc(doc(db, 'transactions', editingId), txData, { merge: true });
-          alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດ!' : 'Updated!');
+          showToast(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດ!' : 'Updated successfully!', 'success');
         } else {
           await addDoc(collection(db, 'transactions'), {
             ...txData,
             createdAt: serverTimestamp()
           });
-          alert(i18n.language === 'la' ? `ບັນທຶກລາຍການ (${formData.source}) ສຳເລັດ!` : 'Saved!');
+          showToast(i18n.language === 'la' ? `ບັນທຶກລາຍການ (${formData.source}) ສຳເລັດ!` : 'Saved successfully!', 'success');
         }
       }
 
@@ -687,7 +699,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         amount: 0,
         category: 'Sales',
         description: '',
-        source: 'Cash',
+        source: 'Onepay',
         receipt: null,
         receiptPreviewUrl: '',
         date: format(new Date(), 'yyyy-MM-dd'),
@@ -698,10 +710,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       setEditingId(null);
       setOldTxData(null);
       setDeleteReceipt(false);
-      setIsSplitIncomeMode(false);
     } catch (err: any) {
       console.error(err);
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -727,11 +738,11 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       time: txToEdit.time || format(new Date(), 'HH:mm')
     });
     setDisplayAmount(parseAmount(txToEdit.amount).toLocaleString());
+    setChannelMode('single');
     setIsEditing(true);
     setEditingId(txToEdit.id);
     setOldTxData(txToEdit);
     setDeleteReceipt(false);
-    setIsSplitIncomeMode(false);
     setShowEditPinModal(false);
     setTxToEdit(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -747,11 +758,11 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     try {
       setLoading(true);
       await deleteDoc(doc(db, 'transactions', txToDelete.id));
-      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດ!' : 'Deleted!');
+      showToast(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດ!' : 'Deleted successfully!', 'success');
       setShowDeletePinModal(false);
       setTxToDelete(null);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -773,7 +784,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       });
       setShowBankModal(false);
       setBankAmount(0);
-      alert("Recorded!");
+      showToast("Bank Opening Balance Recorded!", "success");
     } catch (err: any) {
       handleFirestoreError(err, OperationType.WRITE, 'transactions');
     }
@@ -799,8 +810,42 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
       
+      {/* ================= 🌟 FLOATING IN-APP TOAST NOTIFICATION ================= */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -40, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-5 right-5 z-[300] max-w-sm w-full"
+          >
+            <div className={`p-4 rounded-2xl shadow-2xl backdrop-blur-xl border flex items-center gap-3 ${
+              toast.type === 'success'
+                ? 'bg-emerald-500 text-white border-emerald-400 shadow-emerald-500/20'
+                : 'bg-rose-500 text-white border-rose-400 shadow-rose-500/20'
+            }`}>
+              {toast.type === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 shrink-0 text-white" />
+              ) : (
+                <AlertCircle className="w-5 h-5 shrink-0 text-white" />
+              )}
+              <p className="text-xs font-black tracking-wide flex-1 leading-snug">
+                {toast.message}
+              </p>
+              <button 
+                type="button" 
+                onClick={() => setToast(null)}
+                className="p-1 hover:bg-white/20 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ================= 1. TOP BAR ================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3">
@@ -871,14 +916,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </p>
         </div>
 
-        {/* Cash In Hand Card */}
+        {/* Cash Balance */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
               <Wallet className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ເງິນສົດ (Cash)' : 'Cash Balance'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded font-bold">Cash</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.cashNet).toLocaleString()} ₭`}
@@ -889,14 +934,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* BCEL OnePay Card */}
+        {/* BCEL OnePay */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400 flex items-center gap-1.5">
               <CreditCard className="w-3.5 h-3.5" />
               <span>BCEL OnePay</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded font-bold">OnePay</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.onepayNet).toLocaleString()} ₭`}
@@ -907,14 +952,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* LDB Bank Card */}
+        {/* LDB Bank */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5" />
               <span>{i18n.language === 'la' ? 'ທະນາຄານ LDB' : 'LDB Balance'}</span>
             </span>
-            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
+            <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded font-bold">LDB</span>
           </div>
           <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.ldbNet).toLocaleString()} ₭`}
@@ -1019,14 +1064,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       {/* ================= 4. FORM & FEED ROW ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* LEFT: FORM & SUPPLIER PULL (5 Cols) */}
+        {/* LEFT: REDESIGNED FORM (5 Cols) */}
         <div className="xl:col-span-5 space-y-6">
-          <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
+          <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
             
+            {/* Header + Cancel Edit */}
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
                 <PlusCircle className="w-4 h-4 text-primary" />
-                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit)' : 'ບັນທຶກລາຍການໃໝ່ (New Transaction)'}</span>
+                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit)' : 'ບັນທຶກລາຍການ (New Entry)'}</span>
               </h3>
               {isEditing && (
                 <button 
@@ -1038,14 +1084,14 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                       amount: 0,
                       category: 'Sales',
                       description: '',
-                      source: 'Cash',
+                      source: 'Onepay',
                       receipt: null,
                       receiptPreviewUrl: '',
                       date: format(new Date(), 'yyyy-MM-dd'),
                       time: format(new Date(), 'HH:mm')
                     });
                     setDisplayAmount('');
-                    setIsSplitIncomeMode(false);
+                    setChannelMode('single');
                   }}
                   className="text-[9px] font-black text-red-500 uppercase hover:underline cursor-pointer"
                 >
@@ -1056,37 +1102,68 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
             <form onSubmit={handleAddTransaction} className="space-y-4">
               
-              {/* Type Switcher: Income vs Expense */}
-              <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
+              {/* 1. Type Switcher: Income vs Expense */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200/50 dark:border-white/5">
                 <button 
                   type="button" 
-                  onClick={() => {
-                    setFormData(prev => ({...prev, type: 'income', category: 'Sales'}));
-                  }}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${formData.type === 'income' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'}`}
+                  onClick={() => setFormData(prev => ({...prev, type: 'income', category: 'Sales'}))}
+                  className={`py-2 px-3 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    formData.type === 'income' 
+                      ? 'bg-[#052659] text-white shadow-md' 
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                  }`}
                 >
-                  {t('income')} (ລາຍຮັບ)
+                  <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{t('income')} (ລາຍຮັບ)</span>
                 </button>
+
                 <button 
                   type="button" 
-                  onClick={() => {
-                    setFormData(prev => ({...prev, type: 'expense', category: 'Purchasing'}));
-                    setIsSplitIncomeMode(false);
-                  }}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${formData.type === 'expense' ? 'bg-[#052659] text-white shadow-xs' : 'text-slate-500'}`}
+                  onClick={() => setFormData(prev => ({...prev, type: 'expense', category: 'Purchasing'}))}
+                  className={`py-2 px-3 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    formData.type === 'expense' 
+                      ? 'bg-[#052659] text-white shadow-md' 
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                  }`}
                 >
-                  {t('expense')} (ລາຍຈ່າຍ)
+                  <ArrowDownCircle className="w-3.5 h-3.5 text-red-400" />
+                  <span>{t('expense')} (ລາຍຈ່າຍ)</span>
                 </button>
               </div>
 
-              {/* Date & Time */}
+              {/* 2. Mode Selector: Single Channel vs Split All 3 Channels (Only for Income when not editing) */}
+              {!isEditing && (
+                <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setChannelMode('single')}
+                    className={`flex-1 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all cursor-pointer ${
+                      channelMode === 'single' ? 'bg-white dark:bg-[#073069] text-slate-800 dark:text-white shadow-xs' : 'text-slate-400'
+                    }`}
+                  >
+                    {i18n.language === 'la' ? '1. ເລືອກຊ່ອງທາງດຽວ' : 'Single Channel'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChannelMode('split')}
+                    className={`flex-1 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                      channelMode === 'split' ? 'bg-white dark:bg-[#073069] text-blue-500 shadow-xs' : 'text-slate-400'
+                    }`}
+                  >
+                    <Split className="w-3 h-3" />
+                    <span>{i18n.language === 'la' ? '2. ແຍກ 3 ຊ່ອງທາງ (Cash+OnePay+LDB)' : 'Split 3 Channels'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* 3. Date & Time */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Date</label>
                   <input 
                     type="date"
                     required
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
+                    className="w-full h-10 px-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
                     value={formData.date}
                     onChange={e => {
                       const val = toStandardDateString(e.target.value);
@@ -1099,105 +1176,97 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                   <input 
                     type="time"
                     required
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
                     value={formData.time}
                     onChange={e => setFormData(prev => ({...prev, time: e.target.value}))}
                   />
                 </div>
               </div>
 
-              {/* 🌟 SPLIT INCOME CHECKBOX TOGGLE (Cash + OnePay + LDB) */}
-              {formData.type === 'income' && !isEditing && (
-                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-2xl space-y-3">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input 
-                      type="checkbox"
-                      checked={isSplitIncomeMode}
-                      onChange={(e) => {
-                        setIsSplitIncomeMode(e.target.checked);
-                      }}
-                      className="w-4 h-4 rounded text-primary focus:ring-primary border-slate-300 transition-colors cursor-pointer"
-                    />
-                    <span className="text-[11px] font-black uppercase text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+              {/* 🌟 4. REDESIGNED PAYMENT CHANNEL SELECTION */}
+              
+              {/* A. SPLIT 3-CHANNELS ENTRY BOX */}
+              {channelMode === 'split' && !isEditing ? (
+                <div className="p-4 bg-slate-50 dark:bg-[#041a3c] rounded-2xl border border-slate-200/80 dark:border-white/10 space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                       <Split className="w-3.5 h-3.5 text-blue-500" />
-                      <span>{i18n.language === 'la' ? 'ແຍກບັນທຶກ 3 ຊ່ອງທາງ (Cash + OnePay + LDB)' : 'Split across Cash, OnePay & LDB'}</span>
+                      <span>{i18n.language === 'la' ? 'ປ້ອນຍອດແຍກຕາມ 3 ຊ່ອງທາງ' : 'Enter Split Amounts by Channel'}</span>
                     </span>
-                  </label>
+                    <span className="text-[9px] font-bold text-slate-400 uppercase">Auto Calculated</span>
+                  </div>
 
-                  {/* Split Inputs Grid */}
-                  {isSplitIncomeMode && (
-                    <div className="space-y-2.5 pt-1 animate-in fade-in duration-200">
-                      
-                      {/* Cash Input */}
-                      <div className="flex items-center gap-2">
-                        <span className="w-24 text-[10px] font-black text-emerald-600 dark:text-emerald-400 uppercase flex items-center gap-1">
-                          <Wallet className="w-3 h-3" />
-                          <span>Cash (ເງິນສົດ)</span>
-                        </span>
-                        <input 
-                          type="number"
-                          min="0"
-                          step="any"
-                          placeholder="0"
-                          className="flex-1 h-9 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white"
-                          value={splitCashAmount || ''}
-                          onChange={e => setSplitCashAmount(parseFloat(e.target.value) || 0)}
-                        />
-                        <span className="text-[10px] font-bold text-slate-400">₭</span>
-                      </div>
-
-                      {/* OnePay Input */}
-                      <div className="flex items-center gap-2">
-                        <span className="w-24 text-[10px] font-black text-red-500 dark:text-red-400 uppercase flex items-center gap-1">
-                          <CreditCard className="w-3 h-3" />
-                          <span>OnePay (QR)</span>
-                        </span>
-                        <input 
-                          type="number"
-                          min="0"
-                          step="any"
-                          placeholder="0"
-                          className="flex-1 h-9 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white"
-                          value={splitOnepayAmount || ''}
-                          onChange={e => setSplitOnepayAmount(parseFloat(e.target.value) || 0)}
-                        />
-                        <span className="text-[10px] font-bold text-slate-400">₭</span>
-                      </div>
-
-                      {/* LDB Input */}
-                      <div className="flex items-center gap-2">
-                        <span className="w-24 text-[10px] font-black text-blue-600 dark:text-blue-400 uppercase flex items-center gap-1">
-                          <Building2 className="w-3 h-3" />
-                          <span>ທະນາຄານ LDB</span>
-                        </span>
-                        <input 
-                          type="number"
-                          min="0"
-                          step="any"
-                          placeholder="0"
-                          className="flex-1 h-9 px-3 rounded-xl bg-white dark:bg-[#073069] border border-slate-200 dark:border-white/10 text-xs font-mono font-bold text-slate-800 dark:text-white"
-                          value={splitLdbAmount || ''}
-                          onChange={e => setSplitLdbAmount(parseFloat(e.target.value) || 0)}
-                        />
-                        <span className="text-[10px] font-bold text-slate-400">₭</span>
-                      </div>
-
-                      {/* Sum indicator */}
-                      <div className="p-2.5 bg-white/60 dark:bg-black/20 rounded-xl flex justify-between items-center text-xs font-black">
-                        <span className="text-[10px] text-slate-500 uppercase">ຍອດລາຍຮັບລວມ (Total Sum):</span>
-                        <span className="font-mono text-emerald-600 dark:text-emerald-400 text-sm">
-                          {(parseAmount(splitCashAmount) + parseAmount(splitOnepayAmount) + parseAmount(splitLdbAmount)).toLocaleString()} ₭
-                        </span>
-                      </div>
-
+                  {/* Cash Row */}
+                  <div className="p-2.5 bg-white dark:bg-[#073069] rounded-xl border border-slate-200/60 dark:border-white/5 flex items-center gap-2">
+                    <div className="p-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-lg">
+                      <Wallet className="w-4 h-4" />
                     </div>
-                  )}
-                </div>
-              )}
+                    <div className="flex-1">
+                      <span className="text-[9px] font-black uppercase text-emerald-600 dark:text-emerald-400 block">Cash (ເງິນສົດ)</span>
+                      <input 
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
+                        value={splitCashAmount}
+                        onChange={e => setSplitCashAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
+                  </div>
 
-              {/* Standard Single Amount & Channel (When not in Split Mode) */}
-              {(!isSplitIncomeMode || formData.type === 'expense' || isEditing) && (
+                  {/* OnePay Row */}
+                  <div className="p-2.5 bg-white dark:bg-[#073069] rounded-xl border border-slate-200/60 dark:border-white/5 flex items-center gap-2">
+                    <div className="p-1.5 bg-red-500/10 text-red-500 dark:text-red-400 rounded-lg">
+                      <CreditCard className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1">
+                      <span className="text-[9px] font-black uppercase text-red-500 dark:text-red-400 block">BCEL OnePay (QR)</span>
+                      <input 
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
+                        value={splitOnepayAmount}
+                        onChange={e => setSplitOnepayAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
+                  </div>
+
+                  {/* LDB Row */}
+                  <div className="p-2.5 bg-white dark:bg-[#073069] rounded-xl border border-slate-200/60 dark:border-white/5 flex items-center gap-2">
+                    <div className="p-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-lg">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1">
+                      <span className="text-[9px] font-black uppercase text-blue-600 dark:text-blue-400 block">ທະນາຄານ LDB</span>
+                      <input 
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        className="w-full text-xs font-mono font-bold bg-transparent outline-none text-slate-800 dark:text-white"
+                        value={splitLdbAmount}
+                        onChange={e => setSplitLdbAmount(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 font-mono">₭</span>
+                  </div>
+
+                  {/* Live Total Sum */}
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex justify-between items-center">
+                    <span className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-400">
+                      {i18n.language === 'la' ? 'ຍອດລວມທັງໝົດ:' : 'Total Sum:'}
+                    </span>
+                    <span className="text-sm font-mono font-black text-emerald-700 dark:text-emerald-400">
+                      {(parseAmount(splitCashAmount) + parseAmount(splitOnepayAmount) + parseAmount(splitLdbAmount)).toLocaleString()} ₭
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                /* B. SINGLE CHANNEL ENTRY: BIG 3-WAY SELECTOR BUTTONS */
                 <>
+                  {/* Amount Input */}
                   <div className="space-y-1">
                     <label className="text-[9.5px] font-black uppercase text-slate-400">Amount (₭)</label>
                     <input 
@@ -1210,55 +1279,92 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="text-[9.5px] font-black uppercase text-slate-400">Category</label>
-                      <select 
-                        className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
-                        value={formData.category}
-                        onChange={e => setFormData(prev => ({...prev, category: e.target.value}))}
-                        required
-                      >
-                        {formData.type === 'income' ? (
-                          <>
-                            <option value="Sales">📈 Sales (ຍອດຂາຍ)</option>
-                            <option value="dividends">💵 Dividends (ປັນຜົນ)</option>
-                            <option value="other_income">📦 Other Income (ລາຍຮັບອື່ນໆ)</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="Purchasing">🛒 Purchasing (ວັດຖຸດິບ)</option>
-                            <option value="rent">🏠 Rent (ຄ່າເຊົ່າ)</option>
-                            <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
-                            <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
-                            <option value="admin">💼 Admin (ບໍລິຫານ)</option>
-                            <option value="electricity">⚡ Electricity (ຄ່າໄຟ)</option>
-                            <option value="water">💧 Water (ຄ່ານ້ຳ)</option>
-                            <option value="other">📦 Other (ອື່ນໆ)</option>
-                          </>
-                        )}
-                      </select>
-                    </div>
+                  {/* 3 Payment Channel Interactive Selectors */}
+                  <div className="space-y-1.5">
+                    <label className="text-[9.5px] font-black uppercase text-slate-400 block">
+                      {i18n.language === 'la' ? 'ເລືອກຊ່ອງທາງການເງິນ (Payment Channel)' : 'Select Payment Channel'}
+                    </label>
 
-                    <div className="space-y-1">
-                      <label className="text-[9.5px] font-black uppercase text-slate-400">Payment Channel</label>
-                      <select 
-                        className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
-                        value={formData.source}
-                        onChange={e => setFormData(prev => ({...prev, source: e.target.value as PaymentChannel}))}
+                    <div className="grid grid-cols-3 gap-2">
+                      {/* Cash Button */}
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, source: 'Cash' }))}
+                        className={`p-2.5 rounded-2xl border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                          formData.source === 'Cash'
+                            ? 'bg-emerald-500/10 border-emerald-500 text-emerald-600 dark:text-emerald-400 ring-2 ring-emerald-500/20'
+                            : 'bg-slate-50 dark:bg-white/5 border-slate-200/60 dark:border-white/5 text-slate-500 hover:bg-slate-100'
+                        }`}
                       >
-                        <option value="Cash">💵 Cash (ເງິນສົດ)</option>
-                        <option value="Onepay">📱 BCEL OnePay</option>
-                        <option value="LDB">🏦 ທະນາຄານ LDB</option>
-                      </select>
+                        <Wallet className="w-4 h-4" />
+                        <span className="text-[10px] font-black uppercase">Cash</span>
+                      </button>
+
+                      {/* OnePay Button */}
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, source: 'Onepay' }))}
+                        className={`p-2.5 rounded-2xl border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                          formData.source === 'Onepay'
+                            ? 'bg-red-500/10 border-red-500 text-red-500 dark:text-red-400 ring-2 ring-red-500/20'
+                            : 'bg-slate-50 dark:bg-white/5 border-slate-200/60 dark:border-white/5 text-slate-500 hover:bg-slate-100'
+                        }`}
+                      >
+                        <CreditCard className="w-4 h-4" />
+                        <span className="text-[10px] font-black uppercase">OnePay</span>
+                      </button>
+
+                      {/* LDB Button */}
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => ({ ...prev, source: 'LDB' }))}
+                        className={`p-2.5 rounded-2xl border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                          formData.source === 'LDB'
+                            ? 'bg-blue-500/10 border-blue-500 text-blue-600 dark:text-blue-400 ring-2 ring-blue-500/20'
+                            : 'bg-slate-50 dark:bg-white/5 border-slate-200/60 dark:border-white/5 text-slate-500 hover:bg-slate-100'
+                        }`}
+                      >
+                        <Building2 className="w-4 h-4" />
+                        <span className="text-[10px] font-black uppercase">LDB</span>
+                      </button>
                     </div>
                   </div>
                 </>
               )}
 
+              {/* Category Select */}
+              <div className="space-y-1">
+                <label className="text-[9.5px] font-black uppercase text-slate-400">Category</label>
+                <select 
+                  className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
+                  value={formData.category}
+                  onChange={e => setFormData(prev => ({...prev, category: e.target.value}))}
+                  required
+                >
+                  {formData.type === 'income' ? (
+                    <>
+                      <option value="Sales">📈 Sales (ຍອດຂາຍ)</option>
+                      <option value="dividends">💵 Dividends (ປັນຜົນ)</option>
+                      <option value="other_income">📦 Other Income (ລາຍຮັບອື່ນໆ)</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="Purchasing">🛒 Purchasing (ວັດຖຸດິບ)</option>
+                      <option value="rent">🏠 Rent (ຄ່າເຊົ່າ)</option>
+                      <option value="salary">👥 Salary (ເງິນເດືອນ)</option>
+                      <option value="operations">⚙️ Operations (ດຳເນີນງານ)</option>
+                      <option value="admin">💼 Admin (ບໍລິຫານ)</option>
+                      <option value="electricity">⚡ Electricity (ຄ່າໄຟ)</option>
+                      <option value="water">💧 Water (ຄ່ານ້ຳ)</option>
+                      <option value="other">📦 Other (ອື່ນໆ)</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
               {/* Description */}
               <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Description / Note</label>
+                <label className="text-[9.5px] font-black uppercase text-slate-400">Description / Memo</label>
                 <input 
                   type="text"
                   placeholder="Memo..."
@@ -1339,12 +1445,18 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 )}
               </div>
 
+              {/* Submit Button */}
               <button 
                 type="submit" 
                 disabled={loading}
-                className="w-full h-11 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] text-white font-black text-xs uppercase rounded-2xl transition-all shadow-lg shadow-emerald-500/20 cursor-pointer"
+                className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] text-white font-black text-xs uppercase tracking-wider rounded-2xl transition-all shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center justify-center gap-2"
               >
-                {loading ? 'Processing...' : (isEditing ? 'Update Transaction' : 'Save Transaction')}
+                {loading ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                ) : (
+                  <PlusCircle className="w-4 h-4" />
+                )}
+                <span>{loading ? 'Processing...' : (isEditing ? 'Update Transaction' : 'Save Transaction')}</span>
               </button>
             </form>
           </div>
@@ -1455,10 +1567,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </div>
           </div>
 
-          {/* Live Transaction Ledger Table */}
+          {/* Live Transaction Ledger Table with Plain Text Quick Buttons */}
           <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
-            <div className="p-4 border-b border-slate-100 dark:border-white/10 flex flex-col gap-3">
+            <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-col gap-3">
               
               <div className="flex flex-wrap justify-between items-center gap-2">
                 <div className="flex items-center gap-2">
