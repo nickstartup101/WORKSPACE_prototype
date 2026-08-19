@@ -1,15 +1,60 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../firebase';
-import { collection, query, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query } from 'firebase/firestore';
 import { 
   PieChart, ArrowUpRight, ArrowDownRight, Sparkles, Download, 
   Wallet, CreditCard, Building2, Percent, Loader2, Calendar, 
-  Filter, DollarSign, TrendingUp, ShoppingCart, Tag, CheckCircle2,
-  AlertCircle
+  Filter, DollarSign, TrendingUp, Tag, CheckCircle2,
+  AlertCircle, ArrowRight
 } from 'lucide-react';
-import { format, isSameMonth, parseISO } from 'date-fns';
+import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { useTranslation } from 'react-i18next';
+
+// 🛡️ Bulletproof Safe Date Converter (ແປງວັນທີເປັນ yyyy-MM-dd ເພື່ອການທຽບຊ່ວງເວລາ)
+const toStandardDate = (raw: any): string => {
+  if (!raw) return '';
+  if (typeof raw === 'string') {
+    const clean = raw.trim().split('T')[0];
+    if (clean.includes('-')) {
+      const parts = clean.split('-');
+      if (parts.length === 3) {
+        return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      }
+    }
+    if (clean.includes('/')) {
+      const parts = clean.split('/');
+      if (parts.length === 3 && parts[2].length === 4) {
+        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+    }
+    return clean;
+  }
+  if (raw && typeof raw.toDate === 'function') {
+    try {
+      return format(raw.toDate(), 'yyyy-MM-dd');
+    } catch {
+      return '';
+    }
+  }
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    try {
+      return format(raw, 'yyyy-MM-dd');
+    } catch {
+      return '';
+    }
+  }
+  return '';
+};
+
+// 🛡️ Safe Number Parser
+const parseAmount = (val: any): number => {
+  if (!val) return 0;
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  const clean = String(val).replace(/[^0-9.-]/g, '');
+  const num = parseFloat(clean);
+  return isNaN(num) ? 0 : num;
+};
 
 export default function FinanceReport({ selectedBranch }: { selectedBranch?: string }) {
   const { i18n } = useTranslation();
@@ -17,35 +62,13 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
   const [transactions, setTransactions] = useState<any[]>([]);
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
-  const [selectedMonthStr, setSelectedMonthStr] = useState<string>(format(new Date(), 'yyyy-MM'));
 
-  // 🛡️ ຟັງຊັນແປງວັນທີແບບປອດໄພ
-  const parseSafeDate = (d: any): Date | null => {
-    if (!d) return null;
-    try {
-      if (d instanceof Date && !isNaN(d.getTime())) return d;
-      if (typeof d?.toDate === 'function') return d.toDate();
-      if (typeof d === 'string') {
-        const clean = d.trim().split(' ')[0];
-        if (clean.includes('/')) {
-          const parts = clean.split('/');
-          if (parts.length === 3) {
-            const p0 = parseInt(parts[0], 10);
-            const p1 = parseInt(parts[1], 10);
-            const p2 = parseInt(parts[2], 10);
-            if (p2 > 1000) return new Date(p2, p1 - 1, p0);
-            if (p0 > 1000) return new Date(p0, p1 - 1, p2);
-          }
-        }
-        const parsed = new Date(clean);
-        return isNaN(parsed.getTime()) ? null : parsed;
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  };
+  // Timeframe Preset Mode: 'custom' | 'month' | 'last_month' | 'all'
+  const [timeframeMode, setTimeframeMode] = useState<'custom' | 'today' | 'month' | 'last_month' | 'all'>('month');
+
+  // Custom Date Range States (Start Date & End Date)
+  const [startDate, setStartDate] = useState<string>(() => format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [endDate, setEndDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
 
   // Subscribe Real-time
   useEffect(() => {
@@ -79,29 +102,41 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
     return 'Cash';
   };
 
-  // ================= 📊 1. DYNAMIC FINANCIAL CALCULATION =================
-  const financialData = useMemo(() => {
+  // Quick Preset Range Selectors
+  const handleSelectPreset = (mode: 'today' | 'month' | 'last_month' | 'all') => {
     const now = new Date();
-    let targetDate = now;
-    try {
-      const p = new Date(`${selectedMonthStr}-01`);
-      if (!isNaN(p.getTime())) targetDate = p;
-    } catch {
-      targetDate = now;
-    }
+    setTimeframeMode(mode);
 
-    const filterByTimeframe = (dateInput?: any) => {
+    if (mode === 'today') {
+      const todayStr = format(now, 'yyyy-MM-dd');
+      setStartDate(todayStr);
+      setEndDate(todayStr);
+    } else if (mode === 'month') {
+      setStartDate(format(startOfMonth(now), 'yyyy-MM-dd'));
+      setEndDate(format(now, 'yyyy-MM-dd'));
+    } else if (mode === 'last_month') {
+      const prevMonth = subMonths(now, 1);
+      setStartDate(format(startOfMonth(prevMonth), 'yyyy-MM-dd'));
+      setEndDate(format(endOfMonth(prevMonth), 'yyyy-MM-dd'));
+    } else if (mode === 'all') {
+      setStartDate('2020-01-01');
+      setEndDate(format(now, 'yyyy-MM-dd'));
+    }
+  };
+
+  // ================= 📊 1. DYNAMIC FINANCIAL RANGE CALCULATION =================
+  const financialData = useMemo(() => {
+    const filterByDateRange = (dateInput?: any) => {
       if (timeframeMode === 'all') return true;
-      const parsed = parseSafeDate(dateInput);
-      if (!parsed) return false;
-      try {
-        return isSameMonth(parsed, targetDate);
-      } catch {
-        return false;
-      }
+      const dStr = toStandardDate(dateInput);
+      if (!dStr) return false;
+      
+      const start = startDate || '2000-01-01';
+      const end = endDate || '2099-12-31';
+      return dStr >= start && dStr <= end;
     };
 
-    const activeTransactions = transactions.filter(tx => filterByTimeframe(tx.date));
+    const activeTransactions = transactions.filter(tx => filterByDateRange(tx.date || tx.createdAt));
 
     let totalRevenue = 0;
     let totalCOGS = 0;
@@ -117,14 +152,14 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
 
     const importedSupplierPriceIds = new Set<string>();
     activeTransactions.forEach(tx => {
-      if (tx.supplierPriceIds && Array.isArray(tx.supplierPriceIds)) {
+      if (Array.isArray(tx.supplierPriceIds)) {
         tx.supplierPriceIds.forEach((id: string) => importedSupplierPriceIds.add(id));
       }
     });
 
-    // 1. Process active transactions
+    // 1. Process active transactions within range
     activeTransactions.forEach(tx => {
-      const amt = Number(tx.amount) || 0;
+      const amt = parseAmount(tx.amount);
       const ch = normalizePayment(tx.source);
       const isIncome = tx.type === 'income' || String(tx.category || '').toLowerCase() === 'sales';
 
@@ -157,14 +192,15 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       }
     });
 
-    // 2. Extract unimported supplierPrices (legacy purchasing)
+    // 2. Extract unimported supplierPrices within range
     supplierPrices.forEach(sp => {
-      if (!sp.date || importedSupplierPriceIds.has(sp.id)) return;
-      if (filterByTimeframe(sp.date)) {
-        const isNew = sp.totalPriceLAK !== undefined;
-        const amt = isNew
-          ? Number(sp.totalPriceLAK || 0)
-          : (sp.currency === 'LAK' ? Number(sp.priceOriginal || 0) : Number(sp.priceOriginal || 0) * Number(sp.exchangeRate || 1)) * (Number(sp.quantity) || 1);
+      const dStr = toStandardDate(sp.date || sp.createdAt);
+      if (!dStr || importedSupplierPriceIds.has(sp.id)) return;
+      
+      if (filterByDateRange(dStr)) {
+        const amt = sp.totalPriceLAK !== undefined
+          ? parseAmount(sp.totalPriceLAK)
+          : (sp.currency === 'LAK' ? parseAmount(sp.priceOriginal) : parseAmount(sp.priceOriginal) * parseAmount(sp.exchangeRate || 1)) * (parseAmount(sp.quantity) || 1);
 
         const cat = String(sp.category || 'purchasing').toLowerCase();
         if (cat.includes('purchas') || cat.includes('supply') || cat.includes('ຊື້') || cat === 'purchasing') {
@@ -192,6 +228,11 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       { name: 'Admin & Others (ບໍລິຫານ/ອື່ນໆ)', amount: totalAdmin + totalOtherExpenses, color: 'bg-purple-500', barColor: '#a855f7' }
     ].filter(item => item.amount > 0);
 
+    // Active Period Display Label
+    let periodLabel = `${startDate} ➔ ${endDate}`;
+    if (timeframeMode === 'all') periodLabel = 'All-Time (ປະຫວັດທັງໝົດ)';
+    else if (startDate === endDate) periodLabel = `ວັນທີ: ${startDate}`;
+
     return {
       totalRevenue,
       totalCOGS,
@@ -205,15 +246,17 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
       onepayNet: onepayIn - onepayOut,
       ldbNet: ldbIn - ldbOut,
       breakdownList,
-      activePeriodName: timeframeMode === 'all' ? 'All-Time' : format(targetDate, 'MMMM yyyy')
+      periodLabel,
+      activeTxCount: activeTransactions.length
     };
-  }, [transactions, supplierPrices, timeframeMode, selectedMonthStr]);
+  }, [transactions, supplierPrices, timeframeMode, startDate, endDate]);
 
   const handleExportExcel = () => {
     const headers = ['Financial Metric', 'Amount (LAK)', 'Notes'];
     const rows = [
-      ['Total Revenue (ຍອດຂາຍລວມ)', financialData.totalRevenue, 'Inflows'],
-      ['COGS (ຕົ້ນທຶນວັດຖຸດິບ)', financialData.totalCOGS, 'Material Costs'],
+      ['Date Range (ຊ່ວງເວລາ)', financialData.periodLabel, 'Reporting Range'],
+      ['Total Revenue (ຍອດຂາຍລວມ)', financialData.totalRevenue, 'Customer Inflows'],
+      ['COGS (ຕົ້ນທຶນວັດຖຸດິບ)', financialData.totalCOGS, 'Material Purchases'],
       ['Gross Profit (ກຳໄລຂັ້ນຕົ້ນ)', financialData.grossProfit, 'Revenue - COGS'],
       ['Gross Margin %', `${financialData.grossMarginPercent.toFixed(2)}%`, 'Margin Ratio'],
       ['OPEX (ຄ່າໃຊ້ຈ່າຍດຳເນີນງານ)', financialData.totalOPEX, 'Salary, Rent, Utilities, Admin'],
@@ -227,7 +270,7 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
     const worksheet = utils.aoa_to_sheet([headers, ...rows]);
     const workbook = utils.book_new();
     utils.book_append_sheet(workbook, worksheet, 'Financial Report');
-    writeFile(workbook, `Finance_Report_${financialData.activePeriodName.replace(/\s+/g, '_')}.xlsx`);
+    writeFile(workbook, `Finance_Report_${startDate}_to_${endDate}.xlsx`);
   };
 
   if (loading) {
@@ -242,71 +285,134 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
   return (
     <div className="space-y-6">
 
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
-        <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-            <PieChart className="w-6 h-6 animate-pulse" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">
-                {i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ & ວິເຄາະທຸລະກິດ' : 'Financial Performance & Insights'}
-              </h2>
-              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                {(selectedBranch || 'branch_1') === 'branch_1' ? (i18n.language === 'la' ? 'ສາຂາ 1' : 'Branch 1') : (i18n.language === 'la' ? 'ສາຂາ 2' : 'Branch 2')}
-              </span>
+      {/* ================= 1. HEADER & DATE RANGE FILTER CONTROLS ================= */}
+      <div className="flex flex-col gap-4 p-5 bg-white dark:bg-[#073069] rounded-[2rem] border border-slate-200/70 dark:border-white/10 shadow-sm">
+        
+        {/* Title Row */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+              <PieChart className="w-6 h-6 animate-pulse" />
             </div>
-            <p className="text-[11px] text-slate-400 font-bold mt-0.5">
-              {financialData.activePeriodName}
-            </p>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">
+                  {i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ & ວິເຄາະທຸລະກິດ' : 'Financial Performance & Insights'}
+                </h2>
+                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                  {(selectedBranch || 'branch_1') === 'branch_1' ? (i18n.language === 'la' ? 'ສາຂາ 1' : 'Branch 1') : (i18n.language === 'la' ? 'ສາຂາ 2' : 'Branch 2')}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-bold mt-0.5">
+                {financialData.periodLabel} ({financialData.activeTxCount} transactions)
+              </p>
+            </div>
           </div>
+
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md cursor-pointer transition-all self-start sm:self-auto"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Excel Export</span>
+          </button>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <input
-            type="month"
-            value={selectedMonthStr}
-            onChange={e => {
-              setSelectedMonthStr(e.target.value);
-              setTimeframeMode('month');
-            }}
-            className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white outline-none cursor-pointer"
-          />
+        {/* 📅 Date Range Selector & Quick Preset Shortcuts */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-white/5">
+          
+          {/* Start Date ➔ End Date Inputs */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-white/5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-white/10">
+              <span className="text-[9.5px] font-black uppercase text-slate-400">
+                {i18n.language === 'la' ? 'ເລີ່ມ:' : 'Start:'}
+              </span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => {
+                  setStartDate(toStandardDate(e.target.value));
+                  setTimeframeMode('custom');
+                }}
+                className="bg-transparent text-xs font-bold text-slate-800 dark:text-white outline-none cursor-pointer"
+              />
+            </div>
 
-          <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200/80 dark:border-white/10">
+            <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-white/5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-white/10">
+              <span className="text-[9.5px] font-black uppercase text-slate-400">
+                {i18n.language === 'la' ? 'ຮອດ:' : 'End:'}
+              </span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => {
+                  setEndDate(toStandardDate(e.target.value));
+                  setTimeframeMode('custom');
+                }}
+                className="bg-transparent text-xs font-bold text-slate-800 dark:text-white outline-none cursor-pointer"
+              />
+            </div>
+          </div>
+
+          {/* Quick Preset Buttons (Today, This Month, Last Month, All-Time) */}
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
-              onClick={() => setTimeframeMode('month')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                timeframeMode === 'month' ? 'bg-[#052659] text-white shadow-md' : 'text-slate-500'
+              onClick={() => handleSelectPreset('today')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer ${
+                timeframeMode === 'today' 
+                  ? 'bg-[#052659] text-white shadow-md' 
+                  : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              {i18n.language === 'la' ? 'ມື້ນີ້' : 'Today'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectPreset('month')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer ${
+                timeframeMode === 'month' 
+                  ? 'bg-[#052659] text-white shadow-md' 
+                  : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
               {i18n.language === 'la' ? 'ເດືອນນີ້' : 'This Month'}
             </button>
+
             <button
               type="button"
-              onClick={() => setTimeframeMode('all')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                timeframeMode === 'all' ? 'bg-[#052659] text-white shadow-md' : 'text-slate-500'
+              onClick={() => handleSelectPreset('last_month')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer ${
+                timeframeMode === 'last_month' 
+                  ? 'bg-[#052659] text-white shadow-md' 
+                  : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              {i18n.language === 'la' ? 'ເດືອນຜ່ານມາ' : 'Last Month'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectPreset('all')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer ${
+                timeframeMode === 'all' 
+                  ? 'bg-[#052659] text-white shadow-md' 
+                  : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
               }`}
             >
               {i18n.language === 'la' ? 'ທັງໝົດ' : 'All-Time'}
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Excel</span>
-          </button>
         </div>
+
       </div>
 
-      {/* 5 Core Financial KPIs */}
+      {/* ================= 2. 5 CORE FINANCIAL KPIS ================= */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         
         {/* 1. Revenue */}
@@ -371,7 +477,7 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
 
       </div>
 
-      {/* 3 Channels */}
+      {/* ================= 3. 3 LIQUIDITY CHANNELS ================= */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/70 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
@@ -413,7 +519,7 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
         </div>
       </div>
 
-      {/* High-Performance Cost Distribution & Strategic Insights */}
+      {/* ================= 4. COST STRUCTURE & STRATEGIC INSIGHTS ================= */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         
         {/* Cost Structure Breakdown Bars */}
@@ -488,7 +594,7 @@ export default function FinanceReport({ selectedBranch }: { selectedBranch?: str
                   <span>ຜົນຕອບແທນການລົງທຶນ (Estimated ROI): {financialData.estimatedROI.toFixed(1)}%</span>
                 </h4>
                 <p className="text-[10.5px] text-slate-600 dark:text-slate-300 leading-relaxed font-medium pl-3">
-                  ກຳໄລສຸດທິຫຼັງຫັກຄ່າໃຊ້ຈ່າຍທັງໝົດແມ່ນ {Math.round(financialData.netProfit).toLocaleString()} ₭.
+                  ກຳໄລສຸດທິຫຼັງຫັກຄ່າໃຊ້ຈ່າຍທັງໝົດໃນຊ່ວງເວລານີ້ແມ່ນ {Math.round(financialData.netProfit).toLocaleString()} ₭.
                 </p>
               </div>
             </div>
