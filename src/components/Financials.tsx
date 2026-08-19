@@ -2,20 +2,16 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { auth, db, storage, handleFirestoreError, OperationType } from '../firebase';
 import { 
   collection, addDoc, onSnapshot, query, orderBy, 
-  where, limit, serverTimestamp, setDoc, doc, getDoc, getDocs, deleteDoc
+  where, serverTimestamp, setDoc, doc, getDoc, deleteDoc
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
-import { format, isSameMonth, parseISO, subDays } from 'date-fns';
+import { format, isSameMonth, subDays } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
-import { motion, AnimatePresence } from 'motion/react';
-import { jsPDF } from 'jspdf';
 import { 
-  Upload, Receipt, PlusCircle, ArrowUpCircle, ArrowDownCircle, 
-  Info, Landmark, Download, BarChart3, Eye, EyeOff, X, Trash2, 
-  RefreshCw, Sparkles, CheckCircle, FileText, Wallet, CreditCard,
-  Building2, TrendingUp, DollarSign, Calendar, Filter, PieChart,
-  Percent, ArrowUpRight, ArrowDownRight, Tag, Layers, CheckCircle2,
+  Upload, Receipt, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
+  Sparkles, Wallet, CreditCard, Building2, TrendingUp, DollarSign, 
+  Calendar, Filter, PieChart, Percent, ArrowUpRight, ArrowDownRight, Tag,
   Image as ImageIcon
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -27,6 +23,18 @@ import PinModal from './PinModal';
 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
+// 🛡️ Safe Date Formatter Helper (ປ້ອງກັນ Error Invalid Date ເວລາເລືອກວັນທີ)
+const safeFormatDate = (dateVal: any, formatStr: string, fallback = ''): string => {
+  if (!dateVal) return fallback;
+  try {
+    const d = typeof dateVal === 'string' ? new Date(dateVal.replace(/-/g, '/')) : new Date(dateVal);
+    if (isNaN(d.getTime())) return fallback;
+    return format(d, formatStr);
+  } catch {
+    return fallback;
+  }
+};
+
 export default function Financials({ appConfig, selectedBranch }: { appConfig: any, selectedBranch?: string }) {
   const { t, i18n } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -34,7 +42,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   // Core Data States
   const [allTransactions, setAllTransactions] = useState<any[]>([]);
   const [dailyTransactions, setDailyTransactions] = useState<any[]>([]);
-  const [dailySummary, setDailySummary] = useState<any>(null);
   const [weeklyData, setWeeklyData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showPrivacy, setShowPrivacy] = useState(false);
@@ -42,8 +49,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   // Timeframe View Mode: 'month' (This Month) vs 'all' (All-Time)
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
-  // Date View State
-  const [viewDate, setViewDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  // Date View State (Default to today)
+  const [viewDate, setViewDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
 
   // Drag & Drop State for Receipts
   const [isDraggingReceipt, setIsDraggingReceipt] = useState(false);
@@ -99,21 +106,11 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const [txToDelete, setTxToDelete] = useState<any>(null);
   const [showDeletePinModal, setShowDeletePinModal] = useState(false);
 
-  // Statement PDF Generator State
-  const [showStatementModal, setShowStatementModal] = useState(false);
-  const [statementStartDate, setStatementStartDate] = useState(() => {
-    const d = new Date();
-    d.setDate(1);
-    return format(d, 'yyyy-MM-dd');
-  });
-  const [statementEndDate, setStatementEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [generatingStatement, setGeneratingStatement] = useState(false);
-
   // Supplier Prices Integration
   const [supplierPrices, setSupplierPrices] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
-  const [pullDate, setPullDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [pullDate, setPullDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [paymentDate, setPaymentDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
   const [billPaymentSources, setBillPaymentSources] = useState<{ [id: string]: PaymentChannel }>({});
   const [importingBillId, setImportingBillId] = useState<string | null>(null);
 
@@ -144,7 +141,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     setDeleteReceipt(false);
   };
 
-  // 1. Global Clipboard Paste Listener (Ctrl + V)
+  // Global Clipboard Paste (Ctrl + V)
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -156,7 +153,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           if (blob) {
             const pastedFile = new File(
               [blob], 
-              `receipt-${format(new Date(), 'yyyyMMdd_HHmmss')}.png`, 
+              `receipt-${Date.now()}.png`, 
               { type: 'image/png' }
             );
             processReceiptFile(pastedFile);
@@ -172,7 +169,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, []);
 
-  // 2. Drag & Drop Event Handlers
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -196,7 +192,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     }
   };
 
-  // Upload to Firebase Storage
   const handleUploadToStorage = async (file: File, uploadDate: string) => {
     if (!file.type.startsWith('image/')) {
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${file.name}`);
@@ -209,7 +204,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${compressedFile.name}`);
       await uploadBytes(fileRef, compressedFile);
       return await getDownloadURL(fileRef);
-    } catch (err) {
+    } catch {
       const fileRef = ref(storage, `receipts/${uploadDate}/${Date.now()}_${file.name}`);
       await uploadBytes(fileRef, file);
       return await getDownloadURL(fileRef);
@@ -226,7 +221,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const branchFiltered = all.filter((tx: any) => (tx.branchId || 'branch_1') === branchId);
       setAllTransactions(branchFiltered);
 
-      const daily = branchFiltered.filter((tx: any) => tx.date === viewDate);
+      // Safe filter by selected viewDate
+      const targetDate = viewDate || format(new Date(), 'yyyy-MM-dd');
+      const daily = branchFiltered.filter((tx: any) => tx.date === targetDate);
       daily.sort((a: any, b: any) => (b.time || '').localeCompare(a.time || ''));
       setDailyTransactions(daily);
       setLoading(false);
@@ -234,25 +231,34 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       handleFirestoreError(error, OperationType.LIST, 'transactions');
     });
 
-    const activeSummaryId = branchId === 'branch_1' ? viewDate : `${viewDate}_${branchId}`;
-    const summaryRef = doc(db, 'dailySummaries', activeSummaryId);
-    
-    const unsubscribeSummary = onSnapshot(summaryRef, async (snap) => {
-      if (snap.exists()) setDailySummary(snap.data());
-      else setDailySummary(null);
+    // 🛡️ Safe 7-Day Chart Calculation (ບໍ່ໃຫ້ Crash ເວລາກົດເລືອກວັນທີ)
+    let validBase = new Date();
+    if (viewDate) {
+      const parsed = new Date(viewDate.replace(/-/g, '/'));
+      if (!isNaN(parsed.getTime())) validBase = parsed;
+    }
+
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      try {
+        return format(subDays(validBase, 6 - i), 'yyyy-MM-dd');
+      } catch {
+        return format(new Date(), 'yyyy-MM-dd');
+      }
     });
 
-    // Last 7 days overview
-    const last7Days = Array.from({ length: 7 }, (_, i) => format(subDays(new Date(viewDate), 6 - i), 'yyyy-MM-dd'));
     const fetchWeekly = async () => {
       const weekly = [];
       for (const d of last7Days) {
         const sDocId = branchId === 'branch_1' ? d : `${d}_${branchId}`;
         const sRef = doc(db, 'dailySummaries', sDocId);
-        const sSnap = await getDoc(sRef);
-        if (sSnap.exists()) {
-          weekly.push(sSnap.data());
-        } else {
+        try {
+          const sSnap = await getDoc(sRef);
+          if (sSnap.exists()) {
+            weekly.push(sSnap.data());
+          } else {
+            weekly.push({ date: d, income: 0, expenses: 0 });
+          }
+        } catch {
           weekly.push({ date: d, income: 0, expenses: 0 });
         }
       }
@@ -262,7 +268,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
     return () => {
       unsubscribeAll();
-      unsubscribeSummary();
     };
   }, [viewDate, selectedBranch]);
 
@@ -281,8 +286,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   }, []);
 
   useEffect(() => {
-    setPullDate(viewDate);
-    setPaymentDate(viewDate);
+    if (viewDate) {
+      setPullDate(viewDate);
+      setPaymentDate(viewDate);
+    }
   }, [viewDate]);
 
   // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
@@ -293,7 +300,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       if (timeframeMode === 'all') return true;
       if (!tx.date) return true;
       try {
-        const d = parseISO(tx.date);
+        const d = new Date(tx.date.replace(/-/g, '/'));
+        if (isNaN(d.getTime())) return true;
         return isSameMonth(d, now);
       } catch {
         return true;
@@ -325,11 +333,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         const cat = (tx.category || '').toLowerCase();
         const isPurchasing = cat.includes('purchas') || cat.includes('supply') || cat.includes('ຊື້');
 
-        if (isPurchasing) {
-          totalPurchasing += amt;
-        } else {
-          totalOPEX += amt;
-        }
+        if (isPurchasing) totalPurchasing += amt;
+        else totalOPEX += amt;
 
         if (ch === 'Cash') cashExpense += amt;
         else if (ch === 'Onepay') onepayExpense += amt;
@@ -370,7 +375,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, [allTransactions, timeframeMode]);
 
-  // Supplier Bills available to pull
+  // Supplier Bills list
   const importedSupplierPriceIds = useMemo(() => {
     const ids = new Set<string>();
     allTransactions.forEach((tx) => {
@@ -460,7 +465,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     return bills;
   }, [supplierPrices, pullDate, importedSupplierPriceIds]);
 
-  // Pull Supplier Bill into Transactions
   const handlePullSupplierBill = async (bill: any) => {
     if (!bill) return;
     try {
@@ -486,7 +490,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         description,
         source: selectedSource,
         receiptUrl: bill.items[0]?.billImageUrl || '',
-        date: paymentDate,
+        date: paymentDate || format(new Date(), 'yyyy-MM-dd'),
         time: localTimeString,
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
@@ -497,18 +501,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         branchId: selectedBranch || 'branch_1'
       });
 
-      alert(i18n.language === 'la' 
-        ? `ດຶງລາຍຈ່າຍຈາກ ${bill.supplier} ຈຳນວນ ${totalAmount.toLocaleString()} ₭ (${selectedSource}) ສຳເລັດແລ້ວ!` 
-        : `Successfully imported ${bill.supplier}'s purchase bill (${totalAmount.toLocaleString()} ₭) via ${selectedSource}!`);
+      alert(i18n.language === 'la' ? 'ດຶງລາຍຈ່າຍເຂົ້າບັນຊີສຳເລັດ!' : 'Imported successfully!');
     } catch (err: any) {
-      console.error("Error pulling bill:", err);
-      alert(`ເກີດຂໍ້ຜິດພາດ: ${err.message}`);
+      console.error(err);
+      alert(`Error: ${err.message}`);
     } finally {
       setImportingBillId(null);
     }
   };
 
-  // Add / Edit Transaction
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -527,8 +528,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         description: formData.description,
         source: formData.source,
         receiptUrl,
-        date: formData.date,
-        time: formData.time,
+        date: formData.date || format(new Date(), 'yyyy-MM-dd'),
+        time: formData.time || format(new Date(), 'HH:mm'),
         updatedAt: serverTimestamp(),
         userId: auth.currentUser?.uid || 'admin',
         userEmail: auth.currentUser?.email || 'admin@example.com',
@@ -539,13 +540,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
       if (isEditing && editingId) {
         await setDoc(doc(db, 'transactions', editingId), txData, { merge: true });
-        alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດແລ້ວ!' : 'Transaction updated successfully!');
+        alert(i18n.language === 'la' ? 'ແກ້ໄຂລາຍການສຳເລັດ!' : 'Updated!');
       } else {
         await addDoc(collection(db, 'transactions'), {
           ...txData,
           createdAt: serverTimestamp()
         });
-        alert(i18n.language === 'la' ? 'ບັນທຶກລາຍການສຳເລັດແລ້ວ!' : 'Transaction saved successfully!');
+        alert(i18n.language === 'la' ? 'ບັນທຶກລາຍການສຳເລັດ!' : 'Saved!');
       }
 
       setFormData({
@@ -565,7 +566,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       setOldTxData(null);
       setDeleteReceipt(false);
     } catch (err: any) {
-      console.error("Save error:", err);
+      console.error(err);
       alert(`Error: ${err.message}`);
     } finally {
       setLoading(false);
@@ -587,7 +588,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       source: normalizePaymentChannel(txToEdit.source),
       receipt: null,
       receiptPreviewUrl: txToEdit.receiptUrl || '',
-      date: txToEdit.date,
+      date: txToEdit.date || format(new Date(), 'yyyy-MM-dd'),
       time: txToEdit.time || format(new Date(), 'HH:mm')
     });
     setDisplayAmount(txToEdit.amount.toLocaleString());
@@ -610,7 +611,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     try {
       setLoading(true);
       await deleteDoc(doc(db, 'transactions', txToDelete.id));
-      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດແລ້ວ!' : 'Transaction deleted successfully!');
+      alert(i18n.language === 'la' ? 'ລຶບລາຍການສຳເລັດ!' : 'Deleted!');
       setShowDeletePinModal(false);
       setTxToDelete(null);
     } catch (err: any) {
@@ -636,13 +637,12 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       });
       setShowBankModal(false);
       setBankAmount(0);
-      alert("Bank Opening Balance Recorded!");
+      alert("Recorded!");
     } catch (err: any) {
       handleFirestoreError(err, OperationType.WRITE, 'transactions');
     }
   };
 
-  // Export to Excel
   const handleExport = () => {
     const headers = ['Date', 'Time', 'Type', 'Amount (LAK)', 'Category', 'Payment Channel', 'Description', 'User'];
     const rows = dailyTransactions.map(tx => [
@@ -659,13 +659,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     const worksheet = utils.aoa_to_sheet([headers, ...rows]);
     const workbook = utils.book_new();
     utils.book_append_sheet(workbook, worksheet, 'Financials');
-    writeFile(workbook, `financials_${viewDate}.xlsx`);
+    writeFile(workbook, `financials_${viewDate || 'report'}.xlsx`);
   };
 
   return (
     <div className="space-y-6">
       
-      {/* ================= MODULE 1: TOP BAR & TIMEFRAME CONTROLS ================= */}
+      {/* ================= 1. TOP BAR ================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-5 bg-white dark:bg-[#073069] rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-2xl">
@@ -673,26 +673,23 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
           <div>
             <h2 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-white flex items-center gap-2">
-              {i18n.language === 'la' ? 'ລະບົບການເງິນ & ບັນຊີ (Financials Desk)' : 'Executive Financial Desk'}
+              {i18n.language === 'la' ? 'ລະບົບການເງິນ & ບັນຊີ (Financials)' : 'Financials Desk'}
             </h2>
-            <p className="text-[10px] text-slate-400 dark:text-slate-300 font-bold uppercase mt-0.5">
+            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
               {timeframeMode === 'month' 
-                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${format(new Date(), 'MMMM yyyy')})`)
-                : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time Data)' : 'Viewing: All-Time Overall Data')}
+                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${safeFormatDate(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${safeFormatDate(new Date(), 'MMMM yyyy')})`)
+                : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time)' : 'Viewing: All-Time Data')}
             </p>
           </div>
         </div>
 
-        {/* Timeframe & Privacy Switches */}
         <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
           <div className="flex bg-slate-100 dark:bg-black/25 p-1 rounded-2xl border border-slate-200 dark:border-white/10">
             <button
               type="button"
               onClick={() => setTimeframeMode('month')}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                timeframeMode === 'month'
-                  ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+                timeframeMode === 'month' ? 'bg-[#052659] text-white shadow-md' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
               }`}
             >
               <Calendar className="w-3.5 h-3.5" />
@@ -703,9 +700,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               type="button"
               onClick={() => setTimeframeMode('all')}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                timeframeMode === 'all'
-                  ? 'bg-[#052659] text-white shadow-md'
-                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+                timeframeMode === 'all' ? 'bg-[#052659] text-white shadow-md' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
               }`}
             >
               <Filter className="w-3.5 h-3.5" />
@@ -723,20 +718,16 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         </div>
       </div>
 
-      {/* ================= MODULE 2: PAYMENT LIQUIDITY CARDS (Cash, Onepay, LDB) ================= */}
+      {/* ================= 2. PAYMENT CHANNELS CARDS ================= */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        
-        {/* Total Liquidity Net Balance */}
         <div className="bg-gradient-to-br from-[#052659] to-[#073069] text-white p-5 rounded-3xl shadow-xl space-y-2 relative overflow-hidden">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-[#5483B3]">
-              {i18n.language === 'la' ? 'ຍອດເງິນຄົງເຫຼືອລວມທັງໝົດ' : 'Total Net Liquidity'}
+              {i18n.language === 'la' ? 'ຍອດເງິນຄົງເຫຼືອລວມ' : 'Total Net Cashflow'}
             </span>
-            <div className="p-2 bg-white/10 rounded-xl">
-              <DollarSign className="w-4 h-4 text-emerald-400" />
-            </div>
+            <DollarSign className="w-4 h-4 text-emerald-400" />
           </div>
-          <p className="text-2xl font-black font-mono tracking-tight">
+          <p className="text-2xl font-black font-mono">
             {showPrivacy ? '••••••••' : `${Math.round(financialSummary.totalNetLiquidity).toLocaleString()} ₭`}
           </p>
           <p className="text-[9px] text-blue-200/60 font-bold uppercase">
@@ -744,16 +735,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </p>
         </div>
 
-        {/* Cash In Hand (ເງິນສົດ) */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
               <Wallet className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'ເງິນສົດໃນມື (Cash)' : 'Cash Balance'}</span>
+              <span>{i18n.language === 'la' ? 'ເງິນສົດ (Cash)' : 'Cash Balance'}</span>
             </span>
             <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded">Cash</span>
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.cashNet).toLocaleString()} ₭`}
           </p>
           <div className="flex justify-between text-[9px] text-slate-400 font-bold">
@@ -762,16 +752,15 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* BCEL OnePay */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-red-500 dark:text-red-400 flex items-center gap-1.5">
               <CreditCard className="w-3.5 h-3.5" />
-              <span>{i18n.language === 'la' ? 'BCEL OnePay' : 'OnePay Balance'}</span>
+              <span>BCEL OnePay</span>
             </span>
             <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-red-500/10 text-red-500 rounded">OnePay</span>
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.onepayNet).toLocaleString()} ₭`}
           </p>
           <div className="flex justify-between text-[9px] text-slate-400 font-bold">
@@ -780,7 +769,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* LDB Bank */}
         <div className="bg-white dark:bg-[#073069] p-5 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-sm space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
@@ -789,7 +777,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </span>
             <span className="text-[8.5px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-600 rounded">LDB</span>
           </div>
-          <p className="text-xl font-black font-mono tracking-tight text-slate-800 dark:text-white">
+          <p className="text-xl font-black font-mono text-slate-800 dark:text-white">
             {showPrivacy ? '••••••' : `${Math.round(financialSummary.ldbNet).toLocaleString()} ₭`}
           </p>
           <div className="flex justify-between text-[9px] text-slate-400 font-bold">
@@ -797,95 +785,70 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             <span className="text-red-500">-{Math.round(financialSummary.ldbExpense).toLocaleString()}</span>
           </div>
         </div>
-
       </div>
 
-      {/* ================= MODULE 3: EXECUTIVE FINANCIAL REPORT (ROI, Margin, Revenue, Net Profit) ================= */}
+      {/* ================= 3. FINANCIAL KPIS ================= */}
       <div className="bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-white/10 pb-4">
-          <div>
-            <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-emerald-500" />
-              <span>{i18n.language === 'la' ? 'ບົດລາຍງານປະສິດທິພາບການເງິນ (Financial KPIs)' : 'Financial KPIs & Performance'}</span>
-            </h3>
-            <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
-              {i18n.language === 'la' 
-                ? 'ຄິດໄລ່ຍອດຂາຍ, ຕົ້ນທຶນວັດຖຸດິບ (Purchasing), ຄ່າດຳເນີນງານ ແລະ ກຳໄລສຸດທິ' 
-                : 'Profitability, Gross Margin, and Estimated ROI Analytics'}
-            </p>
-          </div>
-
-          <span className="px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-mono font-black w-fit">
-            {timeframeMode === 'month' ? '📅 Monthly Performance' : '🌐 All-Time Performance'}
+        <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
+          <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-emerald-500" />
+            <span>{i18n.language === 'la' ? 'ບົດລາຍງານປະສິດທິພາບການເງິນ (Financial KPIs)' : 'Financial KPIs'}</span>
+          </h3>
+          <span className="px-3 py-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-mono font-black">
+            {timeframeMode === 'month' ? '📅 Monthly' : '🌐 All-Time'}
           </span>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          
-          {/* Total Revenue */}
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
               <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
-              {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Total Revenue'}
+              {i18n.language === 'la' ? 'ຍອດຂາຍ (Revenue)' : 'Revenue'}
             </span>
             <p className="text-lg font-black font-mono text-emerald-600 dark:text-emerald-400">
               {showPrivacy ? '••••••' : `${Math.round(financialSummary.totalRevenue).toLocaleString()} ₭`}
             </p>
-            <p className="text-[9px] text-slate-400 font-medium">Gross Inflows</p>
           </div>
 
-          {/* Purchasing (COGS) */}
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
               <ArrowDownRight className="w-3.5 h-3.5 text-red-500" />
-              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (Purchasing)' : 'COGS / Materials'}
+              {i18n.language === 'la' ? 'ຕົ້ນທຶນວັດຖຸດິບ (COGS)' : 'COGS'}
             </span>
             <p className="text-lg font-black font-mono text-red-500 dark:text-red-400">
               {showPrivacy ? '••••••' : `${Math.round(financialSummary.totalPurchasing).toLocaleString()} ₭`}
             </p>
-            <p className="text-[9px] text-slate-400 font-medium">Material Procurement</p>
           </div>
 
-          {/* Gross Margin % */}
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 space-y-1">
-            <span className="text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
+            <span className="text-[9.5px] font-black uppercase text-slate-400 flex items-center gap-1">
               <Percent className="w-3.5 h-3.5 text-blue-500" />
               {i18n.language === 'la' ? 'ອັດຕາກຳໄລຂັ້ນຕົ້ນ' : 'Gross Margin'}
             </span>
             <p className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
               {financialSummary.grossMarginPercent.toFixed(1)}%
             </p>
-            <p className="text-[9px] text-slate-400 font-medium">
-              GP: {Math.round(financialSummary.grossProfit).toLocaleString()} ₭
-            </p>
           </div>
 
-          {/* Net Profit */}
           <div className={`p-4 rounded-2xl border space-y-1 ${
-            financialSummary.netProfit >= 0 
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400' 
-              : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
+            financialSummary.netProfit >= 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-400'
           }`}>
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
+            <span className="text-[9.5px] font-black uppercase block">
               {i18n.language === 'la' ? 'ກຳໄລສຸດທິ (Net Profit)' : 'Net Profit'}
             </span>
             <p className="text-lg font-black font-mono">
               {showPrivacy ? '••••••' : `${Math.round(financialSummary.netProfit).toLocaleString()} ₭`}
             </p>
-            <p className="text-[9px] opacity-80 font-medium">Revenue - All Expenses</p>
           </div>
 
-          {/* Estimated ROI */}
           <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 space-y-1">
-            <span className="text-[9.5px] font-black uppercase tracking-wider block">
-              {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI' : 'Estimated ROI'}
+            <span className="text-[9.5px] font-black uppercase block">
+              {i18n.language === 'la' ? 'ຜົນຕອບແທນ ROI' : 'Est. ROI'}
             </span>
             <p className="text-lg font-black font-mono">
               {financialSummary.estimatedROI.toFixed(1)}%
             </p>
-            <p className="text-[9px] opacity-80 font-medium">Return on Total Costs</p>
           </div>
-
         </div>
       </div>
 
@@ -914,17 +877,17 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         onSuccess={handleDeleteConfirmed}
       />
 
-      {/* ================= MODULE 4: TRANSACTION ENTRY & SUPPLIER IMPORT (LEFT) ================= */}
+      {/* ================= 4. FORM & FEED ROW ================= */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-        {/* FORM (5 Cols) */}
+        {/* LEFT: FORM & SUPPLIER PULL (5 Cols) */}
         <div className="xl:col-span-5 space-y-6">
           <div className="high-density-card bg-white dark:bg-[#073069] p-5 sm:p-6 rounded-3xl border border-slate-200/80 dark:border-white/10 shadow-xl space-y-4">
             
             <div className="flex justify-between items-center border-b border-slate-100 dark:border-white/10 pb-3">
               <h3 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
                 <PlusCircle className="w-4 h-4 text-primary" />
-                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit Transaction)' : 'ບັນທຶກລາຍການໃໝ່ (New Transaction)'}</span>
+                <span>{isEditing ? 'ແກ້ໄຂລາຍການ (Edit)' : 'ບັນທຶກລາຍການໃໝ່ (New Transaction)'}</span>
               </h3>
               {isEditing && (
                 <button 
@@ -952,8 +915,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </div>
 
             <form onSubmit={handleAddTransaction} className="space-y-4">
-              
-              {/* Type Switcher */}
               <div className="flex bg-slate-100 dark:bg-black/20 p-1 rounded-xl">
                 <button 
                   type="button" 
@@ -971,16 +932,18 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </button>
               </div>
 
-              {/* Date & Time */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Date</label>
                   <input 
                     type="date"
                     required
-                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white"
+                    className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
                     value={formData.date}
-                    onChange={e => setFormData(prev => ({...prev, date: e.target.value}))}
+                    onChange={e => {
+                      const val = e.target.value;
+                      if (val) setFormData(prev => ({...prev, date: val}));
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
@@ -995,7 +958,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </div>
               </div>
 
-              {/* Amount */}
               <div className="space-y-1">
                 <label className="text-[9.5px] font-black uppercase text-slate-400">Amount (₭)</label>
                 <input 
@@ -1008,7 +970,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 />
               </div>
 
-              {/* Category & Payment Channel */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Category</label>
@@ -1030,7 +991,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                   </select>
                 </div>
 
-                {/* Payment Channel: Cash, Onepay, LDB */}
                 <div className="space-y-1">
                   <label className="text-[9.5px] font-black uppercase text-slate-400">Payment Channel</label>
                   <select 
@@ -1045,9 +1005,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 </div>
               </div>
 
-              {/* Description */}
               <div className="space-y-1">
-                <label className="text-[9.5px] font-black uppercase text-slate-400">Description / Note</label>
+                <label className="text-[9.5px] font-black uppercase text-slate-400">Description</label>
                 <input 
                   type="text"
                   placeholder="Memo..."
@@ -1071,7 +1030,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 <div className="flex justify-between items-center">
                   <span className="text-[9.5px] font-black uppercase text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                     <ImageIcon className="w-3.5 h-3.5 text-blue-500" />
-                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Drop & Ctrl+V Paste)' : 'Receipt Image (Drop / Ctrl+V)'}</span>
+                    <span>{i18n.language === 'la' ? 'ຮູບໃບບິນແນບ (Drop / Ctrl+V)' : 'Receipt Photo (Drop / Ctrl+V)'}</span>
                   </span>
                   {(formData.receipt || formData.receiptPreviewUrl) && (
                     <button
@@ -1082,7 +1041,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                       }}
                       className="text-[9px] font-black text-red-500 hover:underline uppercase cursor-pointer"
                     >
-                      {i18n.language === 'la' ? 'ລົບຮູບ' : 'Remove'}
+                      Remove
                     </button>
                   )}
                 </div>
@@ -1096,7 +1055,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                       className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 text-white text-xs font-bold cursor-pointer"
                     >
                       <Eye className="w-4 h-4" />
-                      <span>{i18n.language === 'la' ? 'ເບິ່ງຮູບເຕັມ' : 'View Full Image'}</span>
+                      <span>{i18n.language === 'la' ? 'ເບິ່ງຮູບເຕັມ' : 'View Full'}</span>
                     </button>
                   </div>
                 ) : (
@@ -1118,12 +1077,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     >
                       <Upload className={`w-5 h-5 ${isDraggingReceipt ? 'text-emerald-500 animate-bounce' : 'text-slate-400'}`} />
                       <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                        {isDraggingReceipt 
-                          ? (i18n.language === 'la' ? 'ປ່ອຍຮູບໃສ່ບ່ອນນີ້ເລີຍ' : 'Drop receipt photo here now')
-                          : (i18n.language === 'la' ? 'ຄລິກເລືອກຮູບ ຫຼື ລາກຮູບມາໃສ່' : 'Click to upload or Drag & Drop photo')}
+                        {isDraggingReceipt ? 'Drop here now' : 'Click to upload or Drag & Drop'}
                       </span>
-                      <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                        {i18n.language === 'la' ? '📋 ຫຼື ກັອບປີ້ແລ້ວກົດ Ctrl + V ວາງໄດ້ເລີຍ' : '📋 Or paste image directly with Ctrl + V'}
+                      <p className="text-[9px] text-slate-400 font-bold uppercase">
+                        📋 Or Paste directly with Ctrl + V
                       </p>
                     </label>
                   </div>
@@ -1153,13 +1110,19 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               <input 
                 type="date"
                 value={pullDate}
-                onChange={e => setPullDate(e.target.value)}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (val) setPullDate(val);
+                }}
                 className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold"
               />
               <input 
                 type="date"
                 value={paymentDate}
-                onChange={e => setPaymentDate(e.target.value)}
+                onChange={e => {
+                  const val = e.target.value;
+                  if (val) setPaymentDate(val);
+                }}
                 className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-blue-500"
               />
             </div>
@@ -1207,10 +1170,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
           </div>
         </div>
 
-        {/* ================= MODULE 5: 7-DAY VISUAL CHART & LIVE FEED (RIGHT) ================= */}
+        {/* RIGHT: CHART & LEDGER FEED (7 Cols) */}
         <div className="xl:col-span-7 space-y-6">
 
-          {/* 7-Day Inflows vs Outflows Chart */}
+          {/* 7-Day Chart */}
           <div className="high-density-card p-0 flex flex-col overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             <div className="p-3.5 border-b border-slate-100 dark:border-white/5 flex justify-between items-center">
               <h4 className="text-xs font-black uppercase text-slate-800 dark:text-white flex items-center gap-2">
@@ -1222,7 +1185,13 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={weeklyData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.5} />
-                  <XAxis dataKey="date" tick={{fontSize: 9}} tickFormatter={(val) => format(new Date(val), 'dd/MM')} axisLine={false} tickLine={false} />
+                  <XAxis 
+                    dataKey="date" 
+                    tick={{fontSize: 9}} 
+                    tickFormatter={(val) => safeFormatDate(val, 'dd/MM', String(val || ''))} 
+                    axisLine={false} 
+                    tickLine={false} 
+                  />
                   <YAxis hide />
                   <Tooltip 
                     contentStyle={{ backgroundColor: '#052659', borderRadius: '12px', fontSize: '11px', color: '#fff' }}
@@ -1243,7 +1212,10 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 <input 
                   type="date"
                   value={viewDate}
-                  onChange={e => setViewDate(e.target.value)}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val) setViewDate(val);
+                  }}
                   className="text-xs font-bold bg-transparent outline-none cursor-pointer text-slate-800 dark:text-white"
                 />
                 <span className="text-[10px] text-slate-400 font-bold uppercase">({dailyTransactions.length} logs)</span>
@@ -1276,7 +1248,6 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     </div>
 
                     <div className="flex items-center gap-4">
-                      {/* Payment Channel Badge */}
                       <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${
                         ch === 'Cash' ? 'bg-emerald-500/10 text-emerald-600' : ch === 'Onepay' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-600'
                       }`}>
@@ -1356,3 +1327,4 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     </div>
   );
 }
+
