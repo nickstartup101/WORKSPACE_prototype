@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { auth, db, storage, handleFirestoreError, OperationType } from '../firebase';
 import { 
-  collection, addDoc, onSnapshot, query, orderBy, 
+  collection, addDoc, onSnapshot, query, 
   serverTimestamp, setDoc, doc, deleteDoc
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
-import { format, isSameMonth, subDays } from 'date-fns';
+import { format, subDays, startOfMonth } from 'date-fns';
 import { utils, writeFile } from 'xlsx';
 import { 
   Upload, Receipt, PlusCircle, Download, BarChart3, Eye, EyeOff, X, Trash2, 
   Sparkles, Wallet, CreditCard, Building2, TrendingUp, DollarSign, 
   Calendar, Filter, PieChart, Percent, ArrowUpRight, ArrowDownRight, Tag,
-  Image as ImageIcon
+  Image as ImageIcon, CheckCircle2, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { 
@@ -23,10 +23,37 @@ import PinModal from './PinModal';
 
 export type PaymentChannel = 'Cash' | 'Onepay' | 'LDB';
 
-// 🛡️ 1. Bulletproof Date Normalizer (ປ້ອງກັນ Crash 100% ບໍ່ວ່າຈະເປັນ String, Timestamp, ຫຼື Undefined)
-const normalizeDateStr = (raw: any): string => {
+// 🛡️ 1. SMART DATE NORMALIZER (ແປງວັນທີທຸກຮູບແບບໃຫ້ເປັນ yyyy-MM-dd ສະເໝີ)
+const toStandardDateString = (raw: any): string => {
   if (!raw) return '';
-  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'string') {
+    const clean = raw.trim();
+    if (clean.includes('T')) return clean.split('T')[0];
+    
+    // Check yyyy-MM-dd or yyyy-M-d
+    if (clean.includes('-')) {
+      const parts = clean.split('-');
+      if (parts.length === 3) {
+        const y = parts[0];
+        const m = parts[1].padStart(2, '0');
+        const d = parts[2].padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+    }
+    // Check dd/MM/yyyy or d/M/yyyy
+    if (clean.includes('/')) {
+      const parts = clean.split('/');
+      if (parts.length === 3) {
+        if (parts[2].length === 4) {
+          const y = parts[2];
+          const m = parts[1].padStart(2, '0');
+          const d = parts[0].padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        }
+      }
+    }
+    return clean;
+  }
   if (raw && typeof raw.toDate === 'function') {
     try {
       return format(raw.toDate(), 'yyyy-MM-dd');
@@ -34,31 +61,24 @@ const normalizeDateStr = (raw: any): string => {
       return '';
     }
   }
-  if (raw instanceof Date) {
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
     try {
       return format(raw, 'yyyy-MM-dd');
     } catch {
       return '';
     }
   }
-  return String(raw || '');
+  return '';
 };
 
-const safeFormatDisplay = (dateVal: any, formatStr: string, fallback = ''): string => {
-  const dateStr = normalizeDateStr(dateVal);
-  if (!dateStr) return fallback;
-  try {
-    const parts = dateStr.split('-');
-    if (parts.length === 3) {
-      const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-      if (!isNaN(d.getTime())) return format(d, formatStr);
-    }
-    const fallbackDate = new Date(dateStr);
-    if (!isNaN(fallbackDate.getTime())) return format(fallbackDate, formatStr);
-    return dateStr;
-  } catch {
-    return fallback || dateStr;
-  }
+// 🛡️ 2. SAFE EXTRACTION FROM RECORD (ຖ້າບໍ່ມີ date ໃຫ້ດຶງຈາກ createdAt ແທນ)
+const getTxDateString = (tx: any): string => {
+  if (!tx) return '';
+  const fromDate = toStandardDateString(tx.date);
+  if (fromDate) return fromDate;
+  const fromCreated = toStandardDateString(tx.createdAt);
+  if (fromCreated) return fromCreated;
+  return '';
 };
 
 export default function Financials({ appConfig, selectedBranch }: { appConfig: any, selectedBranch?: string }) {
@@ -73,13 +93,12 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   // Timeframe View Mode: 'month' (This Month) vs 'all' (All-Time)
   const [timeframeMode, setTimeframeMode] = useState<'month' | 'all'>('month');
 
-  // Date View State
+  // Date View Filter State
   const [viewDate, setViewDate] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [showAllMonthRecords, setShowAllMonthRecords] = useState(false);
 
   // Drag & Drop State for Receipts
   const [isDraggingReceipt, setIsDraggingReceipt] = useState(false);
-
-  // Receipt Viewer Modal State
   const [previewReceiptModalUrl, setPreviewReceiptModalUrl] = useState<string | null>(null);
 
   // Bank Opening Balance Modal State
@@ -235,14 +254,25 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     }
   };
 
-  // ================= 🔄 FIRESTORE REAL-TIME SUBSCRIPTION (DECOUPLED FROM viewDate) =================
+  // ================= 🔄 FIRESTORE REAL-TIME SUBSCRIPTION (SAFE QUERY) =================
   useEffect(() => {
-    const qAll = query(collection(db, 'transactions'), orderBy('date', 'desc'));
     const branchId = selectedBranch || 'branch_1';
+    
+    // Fetch directly from collection without composite index dependency
+    const qAll = query(collection(db, 'transactions'));
 
     const unsubscribeAll = onSnapshot(qAll, (snap) => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       const branchFiltered = all.filter((tx: any) => (tx.branchId || 'branch_1') === branchId);
+      
+      // Sort client-side by date and time safely
+      branchFiltered.sort((a: any, b: any) => {
+        const dateA = getTxDateString(a);
+        const dateB = getTxDateString(b);
+        if (dateA !== dateB) return dateB.localeCompare(dateA);
+        return String(b.time || '').localeCompare(String(a.time || ''));
+      });
+
       setAllTransactions(branchFiltered);
       setLoading(false);
     }, (error) => {
@@ -269,19 +299,31 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     };
   }, []);
 
-  // ⚡ 2. Reactive Daily Transactions (Instant filtering in memory without network reload)
+  // ⚡ 2. INSTANT FILTERED TRANSACTIONS (CRASH-PROOF)
   const dailyTransactions = useMemo(() => {
-    const targetDate = viewDate || format(new Date(), 'yyyy-MM-dd');
-    const filtered = allTransactions.filter((tx: any) => normalizeDateStr(tx.date) === targetDate);
-    filtered.sort((a: any, b: any) => String(b.time || '').localeCompare(String(a.time || '')));
-    return filtered;
-  }, [allTransactions, viewDate]);
+    const targetDate = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
+    
+    // If showAllMonthRecords is active, show all records belonging to the selected month
+    if (showAllMonthRecords && targetDate) {
+      const [year, month] = targetDate.split('-');
+      const monthPrefix = `${year}-${month}`;
+      return allTransactions.filter((tx: any) => {
+        const d = getTxDateString(tx);
+        return d.startsWith(monthPrefix);
+      });
+    }
 
-  // ⚡ 3. Instant 7-Day Chart computed in memory (Zero Network Delay)
+    // Default: Filter exact day
+    return allTransactions.filter((tx: any) => getTxDateString(tx) === targetDate);
+  }, [allTransactions, viewDate, showAllMonthRecords]);
+
+  // ⚡ 3. 7-DAY IN-MEMORY CHART (ZERO LATENCY, NEVER CRASHES)
   const weeklyData = useMemo(() => {
+    const standardDate = toStandardDateString(viewDate) || format(new Date(), 'yyyy-MM-dd');
     let validBase = new Date();
-    if (viewDate) {
-      const parts = viewDate.split('-');
+    
+    if (standardDate) {
+      const parts = standardDate.split('-');
       if (parts.length === 3) {
         const parsed = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
         if (!isNaN(parsed.getTime())) validBase = parsed;
@@ -289,8 +331,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
     }
 
     return Array.from({ length: 7 }, (_, i) => {
-      const targetDate = format(subDays(validBase, 6 - i), 'yyyy-MM-dd');
-      const dayTxs = allTransactions.filter(tx => normalizeDateStr(tx.date) === targetDate);
+      const dObj = subDays(validBase, 6 - i);
+      const targetDate = format(dObj, 'yyyy-MM-dd');
+      const dayTxs = allTransactions.filter(tx => getTxDateString(tx) === targetDate);
 
       let income = 0;
       let expenses = 0;
@@ -306,7 +349,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
       return {
         date: targetDate,
-        displayDate: format(subDays(validBase, 6 - i), 'dd/MM'),
+        displayDate: format(dObj, 'dd/MM'),
         income,
         expenses
       };
@@ -315,29 +358,22 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
   useEffect(() => {
     if (viewDate) {
-      setPullDate(viewDate);
-      setPaymentDate(viewDate);
+      const std = toStandardDateString(viewDate);
+      setPullDate(std);
+      setPaymentDate(std);
     }
   }, [viewDate]);
 
   // ================= 📊 FINANCIAL KPIS & PAYMENT CHANNEL CALCULATION =================
   const financialSummary = useMemo(() => {
     const now = new Date();
+    const currentMonthPrefix = format(now, 'yyyy-MM');
 
     const activeList = allTransactions.filter(tx => {
       if (timeframeMode === 'all') return true;
-      const dStr = normalizeDateStr(tx.date);
+      const dStr = getTxDateString(tx);
       if (!dStr) return true;
-      try {
-        const parts = dStr.split('-');
-        if (parts.length === 3) {
-          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-          return isSameMonth(d, now);
-        }
-        return true;
-      } catch {
-        return true;
-      }
+      return dStr.startsWith(currentMonthPrefix);
     });
 
     let totalRevenue = 0;
@@ -414,7 +450,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const importedSupplierPriceIds = useMemo(() => {
     const ids = new Set<string>();
     allTransactions.forEach((tx) => {
-      if (tx.supplierPriceIds && Array.isArray(tx.supplierPriceIds)) {
+      if (Array.isArray(tx.supplierPriceIds)) {
         tx.supplierPriceIds.forEach((id: string) => ids.add(id));
       }
     });
@@ -422,7 +458,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   }, [allTransactions]);
 
   const supplierBillsForSelectedDate = useMemo(() => {
-    const selectedDatePrices = supplierPrices.filter(p => normalizeDateStr(p.date) === pullDate);
+    const selectedDatePrices = supplierPrices.filter(p => getTxDateString(p) === pullDate);
 
     const isOther = (name: string) => {
       const n = String(name || '').trim().toUpperCase();
@@ -515,7 +551,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       const todayLocal = new Date();
       const localTimeString = `${String(todayLocal.getHours()).padStart(2, '0')}:${String(todayLocal.getMinutes()).padStart(2, '0')}`;
 
-      const pNames = bill.items.map((it: any) => products.find(prod => prod.id === it.productId)?.name || 'Item').join(', ');
+      const pNames = (bill.items || []).map((it: any) => products.find(prod => prod.id === it.productId)?.name || 'Item').join(', ');
       const description = `Purchase supplies from ${bill.supplier}: ${pNames}`;
 
       await addDoc(collection(db, 'transactions'), {
@@ -524,7 +560,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         category: 'Purchasing',
         description,
         source: selectedSource,
-        receiptUrl: bill.items[0]?.billImageUrl || '',
+        receiptUrl: bill.items?.[0]?.billImageUrl || '',
         date: paymentDate || format(new Date(), 'yyyy-MM-dd'),
         time: localTimeString,
         updatedAt: serverTimestamp(),
@@ -532,7 +568,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         userId: auth.currentUser?.uid || 'admin',
         userEmail: auth.currentUser?.email || 'admin@example.com',
         supplierName: bill.supplier,
-        supplierPriceIds: bill.sourceIds,
+        supplierPriceIds: bill.sourceIds || [],
         branchId: selectedBranch || 'branch_1'
       });
 
@@ -556,6 +592,8 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         receiptUrl = oldTxData?.receiptUrl || '';
       }
 
+      const cleanDate = toStandardDateString(formData.date) || format(new Date(), 'yyyy-MM-dd');
+
       const txData = {
         type: formData.type,
         amount: formData.amount,
@@ -563,7 +601,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
         description: formData.description,
         source: formData.source,
         receiptUrl,
-        date: formData.date || format(new Date(), 'yyyy-MM-dd'),
+        date: cleanDate,
         time: formData.time || format(new Date(), 'HH:mm'),
         updatedAt: serverTimestamp(),
         userId: auth.currentUser?.uid || 'admin',
@@ -615,6 +653,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
   const handleEditConfirmed = () => {
     if (!txToEdit) return;
+    const cleanDate = getTxDateString(txToEdit) || format(new Date(), 'yyyy-MM-dd');
     setFormData({
       type: txToEdit.type,
       amount: txToEdit.amount,
@@ -623,7 +662,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
       source: normalizePaymentChannel(txToEdit.source),
       receipt: null,
       receiptPreviewUrl: txToEdit.receiptUrl || '',
-      date: normalizeDateStr(txToEdit.date) || format(new Date(), 'yyyy-MM-dd'),
+      date: cleanDate,
       time: txToEdit.time || format(new Date(), 'HH:mm')
     });
     setDisplayAmount(txToEdit.amount.toLocaleString());
@@ -681,7 +720,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
   const handleExport = () => {
     const headers = ['Date', 'Time', 'Type', 'Amount (LAK)', 'Category', 'Payment Channel', 'Description', 'User'];
     const rows = dailyTransactions.map(tx => [
-      normalizeDateStr(tx.date),
+      getTxDateString(tx),
       tx.time || '',
       tx.type,
       tx.amount,
@@ -712,7 +751,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </h2>
             <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
               {timeframeMode === 'month' 
-                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${safeFormatDisplay(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${safeFormatDisplay(new Date(), 'MMMM yyyy')})`)
+                ? (i18n.language === 'la' ? `ກຳລັງສະແດງ: ສະເພາະເດືອນນີ້ (${format(new Date(), 'MMMM yyyy')})` : `Viewing: Current Month (${format(new Date(), 'MMMM yyyy')})`)
                 : (i18n.language === 'la' ? 'ກຳລັງສະແດງ: ຍອດລວມທັງໝົດ (All-Time)' : 'Viewing: All-Time Data')}
             </p>
           </div>
@@ -975,10 +1014,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                     required
                     className="w-full h-10 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white cursor-pointer"
                     value={formData.date}
-                    onChange={e => {
-                      const val = e.target.value;
-                      if (val) setFormData(prev => ({...prev, date: val}));
-                    }}
+                    onChange={e => setFormData(prev => ({...prev, date: e.target.value}))}
                   />
                 </div>
                 <div className="space-y-1">
@@ -1051,7 +1087,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 />
               </div>
 
-              {/* 🖼️ RECEIPT BOX (DRAG & DROP, PASTE CTRL+V, OR CLICK TO UPLOAD) */}
+              {/* 🖼️ RECEIPT BOX */}
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -1146,7 +1182,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 type="date"
                 value={pullDate}
                 onChange={e => {
-                  const val = e.target.value;
+                  const val = toStandardDateString(e.target.value);
                   if (val) setPullDate(val);
                 }}
                 className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold cursor-pointer"
@@ -1155,7 +1191,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                 type="date"
                 value={paymentDate}
                 onChange={e => {
-                  const val = e.target.value;
+                  const val = toStandardDateString(e.target.value);
                   if (val) setPaymentDate(val);
                 }}
                 className="w-full h-9 px-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold text-blue-500 cursor-pointer"
@@ -1238,32 +1274,93 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
             </div>
           </div>
 
-          {/* Live Transaction Ledger Table */}
+          {/* Live Transaction Ledger Table with Navigation Shortcuts */}
           <div className="high-density-card p-0 flex flex-col min-h-[500px] overflow-hidden bg-white dark:bg-[#073069] border border-slate-200/80 dark:border-white/10 shadow-xl rounded-3xl">
             
-            <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-wrap justify-between items-center gap-2">
-              <div className="flex items-center gap-2">
-                <input 
-                  type="date"
-                  value={viewDate}
-                  onChange={e => {
-                    const val = e.target.value;
-                    if (val) setViewDate(val);
-                  }}
-                  className="text-xs font-bold bg-transparent outline-none cursor-pointer text-slate-800 dark:text-white"
-                />
-                <span className="text-[10px] text-slate-400 font-bold uppercase">({dailyTransactions.length} logs)</span>
+            <div className="p-4 border-b border-slate-100 dark:border-white/10 flex flex-col gap-3">
+              
+              <div className="flex flex-wrap justify-between items-center gap-2">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="date"
+                    value={viewDate}
+                    onChange={e => {
+                      const val = toStandardDateString(e.target.value);
+                      if (val) {
+                        setViewDate(val);
+                        setShowAllMonthRecords(false);
+                      }
+                    }}
+                    className="text-xs font-bold bg-transparent outline-none cursor-pointer text-slate-800 dark:text-white"
+                  />
+                  <span className="text-[10px] text-slate-400 font-bold uppercase">
+                    ({dailyTransactions.length} logs)
+                  </span>
+                </div>
+
+                <div className="flex gap-2">
+                  <button 
+                    onClick={handleExport}
+                    className="px-3 py-1 bg-slate-100 dark:bg-white/10 rounded-xl text-[10px] font-black uppercase text-blue-500 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Download className="w-3 h-3" />
+                    Excel
+                  </button>
+                </div>
               </div>
 
-              <div className="flex gap-2">
-                <button 
-                  onClick={handleExport}
-                  className="px-3 py-1 bg-slate-100 dark:bg-white/10 rounded-xl text-[10px] font-black uppercase text-blue-500 flex items-center gap-1 cursor-pointer"
+              {/* ⚡ Quick Date Jump Shortcuts (ກົດເລືອກມື້ໄດ້ໄວ 100%) */}
+              <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100 dark:border-white/5 text-[9.5px]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setViewDate(format(new Date(), 'yyyy-MM-dd'));
+                    setShowAllMonthRecords(false);
+                  }}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
                 >
-                  <Download className="w-3 h-3" />
-                  Excel
+                  {i18n.language === 'la' ? '⚡ ມື້ນີ້' : '⚡ Today'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const firstDay = format(startOfMonth(new Date()), 'yyyy-MM-dd');
+                    setViewDate(firstDay);
+                    setShowAllMonthRecords(false);
+                  }}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
+                >
+                  {i18n.language === 'la' ? '📅 ຕົ້ນເດືອນ (1st)' : '📅 1st of Month'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const yest = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+                    setViewDate(yest);
+                    setShowAllMonthRecords(false);
+                  }}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-300 rounded-lg font-bold cursor-pointer"
+                >
+                  {i18n.language === 'la' ? 'ມື້ວານ' : 'Yesterday'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAllMonthRecords(prev => !prev)}
+                  className={`px-2.5 py-1 rounded-lg font-black uppercase transition-all cursor-pointer ${
+                    showAllMonthRecords 
+                      ? 'bg-blue-600 text-white shadow-xs' 
+                      : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                  }`}
+                >
+                  {showAllMonthRecords 
+                    ? (i18n.language === 'la' ? '✓ ກຳລັງສະແດງທັງເດືອນ' : '✓ Showing Entire Month') 
+                    : (i18n.language === 'la' ? '👁️ ເບິ່ງທັງໝົດໃນເດືອນນີ້' : '👁️ View Entire Month')}
                 </button>
               </div>
+
             </div>
 
             <div className="flex-1 overflow-x-auto divide-y divide-slate-100 dark:divide-white/5">
@@ -1277,7 +1374,9 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
                       <div className={`w-1.5 h-8 rounded-full ${isInc ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
                       <div>
                         <p className="text-xs font-bold text-slate-800 dark:text-white">{tx.category || 'Transaction'}</p>
-                        <p className="text-[10px] text-slate-400">{tx.description || tx.time}</p>
+                        <p className="text-[10px] text-slate-400">
+                          {getTxDateString(tx)} • {tx.time || ''} {tx.description ? `• ${tx.description}` : ''}
+                        </p>
                       </div>
                     </div>
 
@@ -1290,7 +1389,7 @@ export default function Financials({ appConfig, selectedBranch }: { appConfig: a
 
                       <div className="text-right">
                         <p className={`text-xs font-mono font-black ${isInc ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                          {showPrivacy ? '••••••' : `${isInc ? '+' : '-'}${Number(tx.amount).toLocaleString()} ₭`}
+                          {showPrivacy ? '••••••' : `${isInc ? '+' : '-'}${Number(tx.amount || 0).toLocaleString()} ₭`}
                         </p>
                         {tx.receiptUrl && (
                           <button 
