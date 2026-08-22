@@ -287,14 +287,13 @@ export default function App() {
 
   // ✅ 🧭 ລາຍການເມນູທັງໝົດໃນລະບົບ (ລວມທັງ Report ແລະ Debts AP/AR):
   const navItems = [
-    { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
-    { id: 'report', icon: PieChart, label: i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ' : 'Finance Report' },
-    { id: 'debts', icon: Receipt, label: i18n.language === 'la' ? 'ໜີ້ຕ້ອງສົ່ງ & ຮັບ (AP/AR)' : 'Debt Ledger' },
-    { id: 'suppliers', icon: Truck, label: t('suppliers') },
-    { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
-    { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
-    { id: 'settings', icon: SettingsIcon, label: t('settings') },
-  ];
+  { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
+  { id: 'cogs', icon: Scale, label: i18n.language === 'la' ? 'ຕົ້ນທຶນ WAC & COGS' : 'WAC & COGS' },
+  { id: 'suppliers', icon: Truck, label: t('suppliers') },
+  { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
+  { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
+  { id: 'settings', icon: SettingsIcon, label: t('settings') },
+];
 
   const handleTabChange = (item: any) => {
     if (item.isSensitive && !isFinancialUnlocked) {
@@ -479,12 +478,11 @@ export default function App() {
         <div className="flex-1 p-4 lg:p-6 overflow-y-auto bg-gradient-to-br from-[#f8fafc] to-[#f1f5f9] dark:from-[#052659] dark:to-[#073069]">
            <div className="max-w-7xl mx-auto space-y-6">
              {activeTab === 'dashboard' && <Dashboard userSettings={userSettings} user={user} selectedBranch={selectedBranch} />}
-             {activeTab === 'report' && <FinanceReport selectedBranch={selectedBranch} />}
-             {activeTab === 'debts' && <DebtLedger selectedBranch={selectedBranch} />}
-             {activeTab === 'suppliers' && <Suppliers />}
-             {activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
-             {activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
-             {activeTab === 'settings' && <Settings user={user} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} userSettings={userSettings} isSuperAdmin={isSuperAdmin} appConfig={appConfig} selectedBranch={selectedBranch} />}
+{activeTab === 'cogs' && <CogsIntelligence selectedBranch={selectedBranch} userSettings={userSettings} />}
+{activeTab === 'suppliers' && <Suppliers />}
+{activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
+{activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
+{activeTab === 'settings' && <Settings ... />}
           </div>
         </div>
 
