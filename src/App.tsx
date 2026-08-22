@@ -25,7 +25,10 @@ import {
   ChevronRight,
   CheckCircle,
   PieChart,
-  Receipt
+  Receipt,
+  Scale,
+  FileText,
+  CreditCard
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
@@ -275,7 +278,7 @@ export default function App() {
           <TextLogo centered={true} name={appConfig?.shopName || userSettings?.shopName} />
           <button 
             onClick={login}
-            className="crystal-button w-full h-16 flex items-center justify-center gap-4 text-[11px] shadow-none border border-[#052659]/10 dark:border-white/10"
+            className="crystal-button w-full h-16 flex items-center justify-center gap-4 text-[11px] shadow-none border border-[#052659]/10 dark:border-white/10 cursor-pointer"
           >
             <Globe className="w-5 h-5 opacity-50" />
             <span className="tracking-[0.2em]">{t('sign_in_google')}</span>
@@ -285,15 +288,17 @@ export default function App() {
     );
   }
 
-  // ✅ 🧭 ລາຍການເມນູທັງໝົດໃນລະບົບ (ລວມທັງ Report ແລະ Debts AP/AR):
+  // 🧭 ລາຍການເມນູທັງໝົດໃນລະບົບ
   const navItems = [
-  { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
-  { id: 'cogs', icon: Scale, label: i18n.language === 'la' ? 'ຕົ້ນທຶນ WAC & COGS' : 'WAC & COGS' },
-  { id: 'suppliers', icon: Truck, label: t('suppliers') },
-  { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
-  { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
-  { id: 'settings', icon: SettingsIcon, label: t('settings') },
-];
+    { id: 'dashboard', icon: LayoutDashboard, label: t('dashboard') },
+    { id: 'cogs', icon: Scale, label: i18n.language === 'la' ? 'ຕົ້ນທຶນ WAC & COGS' : 'WAC & COGS' },
+    { id: 'reports', icon: FileText, label: i18n.language === 'la' ? 'ບົດລາຍງານການເງິນ' : 'Financial Reports' },
+    { id: 'debts', icon: CreditCard, label: i18n.language === 'la' ? 'ໜີ້ຕ້ອງສົ່ງ & ຮັບ (AP/AR)' : 'Debt Ledger (AP/AR)' },
+    { id: 'suppliers', icon: Truck, label: t('suppliers') },
+    { id: 'planner', icon: Sparkles, label: i18n.language === 'la' ? 'ແຜນຈັດຊື້ & ບິນ' : 'Auto-Bill Planner' },
+    { id: 'financials', icon: Wallet, label: t('financials'), isSensitive: true },
+    { id: 'settings', icon: SettingsIcon, label: t('settings') },
+  ];
 
   const handleTabChange = (item: any) => {
     if (item.isSensitive && !isFinancialUnlocked) {
@@ -355,7 +360,7 @@ export default function App() {
           )}
           <button 
             onClick={() => setIsSidebarOpen(false)} 
-            className="lg:hidden p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all"
+            className="lg:hidden p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-xl transition-all cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -368,7 +373,7 @@ export default function App() {
               onClick={() => handleTabChange(item)}
               title={isSidebarCollapsed ? item.label : undefined}
               className={`
-                w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-0' : 'justify-start px-4'} py-3 rounded-xl text-[12px] font-bold uppercase tracking-wider transition-all duration-300
+                w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-0' : 'justify-start px-4'} py-3 rounded-xl text-[12px] font-bold uppercase tracking-wider transition-all duration-300 cursor-pointer
                 ${activeTab === item.id 
                   ? 'bg-white/10 text-white shadow-[0_8px_16px_-4px_rgba(0,0,0,0.3)] border border-white/10 backdrop-blur-md' 
                   : 'text-white/40 hover:bg-white/5 hover:text-white'}
@@ -396,14 +401,14 @@ export default function App() {
           <div className={`flex ${isSidebarCollapsed ? 'flex-col items-center' : 'items-center'} gap-2`}>
             <button
               onClick={toggleSidebarCollapse}
-              className="hidden lg:flex items-center justify-center p-2 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all"
+              className="hidden lg:flex items-center justify-center p-2 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all cursor-pointer"
             >
               {isSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
             </button>
 
             <button 
               onClick={logout}
-              className={`flex items-center justify-center gap-2 py-2 text-[11px] font-bold uppercase tracking-widest text-red-300 hover:text-red-400 hover:bg-white/5 rounded-xl transition-all ${isSidebarCollapsed ? 'w-full' : 'flex-1'}`}
+              className={`flex items-center justify-center gap-2 py-2 text-[11px] font-bold uppercase tracking-widest text-red-300 hover:text-red-400 hover:bg-white/5 rounded-xl transition-all cursor-pointer ${isSidebarCollapsed ? 'w-full' : 'flex-1'}`}
             >
               <LogOut className="w-3.5 h-3.5 shrink-0" />
               {!isSidebarCollapsed && <span className="animate-in fade-in duration-200">{t('logout')}</span>}
@@ -430,7 +435,7 @@ export default function App() {
 
           <div className="flex items-center gap-2">
              <div className="relative group">
-               <button className="h-9 px-3 bg-white/10 hover:bg-white/15 active:bg-white/20 rounded-xl flex items-center gap-2 transition-all border border-white/5 shadow-inner">
+               <button className="h-9 px-3 bg-white/10 hover:bg-white/15 active:bg-white/20 rounded-xl flex items-center gap-2 transition-all border border-white/5 shadow-inner cursor-pointer">
                  <Store className="w-3.5 h-3.5 text-blue-300" />
                  <span className="text-[10px] font-black uppercase tracking-wider text-white">
                    {selectedBranch === 'branch_1' 
@@ -443,14 +448,14 @@ export default function App() {
                <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-[#073069] border border-slate-100 dark:border-white/10 rounded-2xl shadow-xl py-2 hidden group-hover:block hover:block z-50 text-slate-800 dark:text-white">
                  <button
                    onClick={() => { setSelectedBranch('branch_1'); localStorage.setItem('selected_branch', 'branch_1'); }}
-                   className={`w-full text-left px-4 py-2.5 text-xs font-bold flex items-center gap-2 ${selectedBranch === 'branch_1' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-slate-700 dark:text-slate-300'}`}
+                   className={`w-full text-left px-4 py-2.5 text-xs font-bold flex items-center gap-2 cursor-pointer ${selectedBranch === 'branch_1' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50'}`}
                  >
                    <MapPin className="w-3.5 h-3.5" />
                    <span>ສາຂາ 1 (ນະຄອນຫຼວງ)</span>
                  </button>
                  <button
                    onClick={() => { setSelectedBranch('branch_2'); localStorage.setItem('selected_branch', 'branch_2'); }}
-                   className={`w-full text-left px-4 py-2.5 text-xs font-bold flex items-center gap-2 ${selectedBranch === 'branch_2' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-slate-700 dark:text-slate-300'}`}
+                   className={`w-full text-left px-4 py-2.5 text-xs font-bold flex items-center gap-2 cursor-pointer ${selectedBranch === 'branch_2' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50'}`}
                  >
                    <MapPin className="w-3.5 h-3.5" />
                    <span>ສາຂາ 2 (ຫຼວງພະບາງ)</span>
@@ -460,14 +465,14 @@ export default function App() {
 
              <button 
               onClick={() => i18n.changeLanguage(i18n.language === 'la' ? 'en' : 'la')}
-              className="p-2 hover:bg-white/10 rounded-md text-white flex items-center gap-2 text-[10px] font-black uppercase tracking-widest"
+              className="p-2 hover:bg-white/10 rounded-md text-white flex items-center gap-2 text-[10px] font-black uppercase tracking-widest cursor-pointer"
             >
               <Globe className="w-4 h-4 text-white/60" />
               <span className="hidden sm:inline">{i18n.language === 'la' ? 'LA' : 'EN'}</span>
             </button>
             <button 
               onClick={() => setIsDarkMode(!isDarkMode)}
-              className="p-2 hover:bg-white/10 rounded-md text-white flex items-center gap-2"
+              className="p-2 hover:bg-white/10 rounded-md text-white flex items-center gap-2 cursor-pointer"
             >
               {isDarkMode ? <Sun className="w-4 h-4 text-yellow-400" /> : <Moon className="w-4 h-4 text-blue-300" />}
             </button>
@@ -478,11 +483,13 @@ export default function App() {
         <div className="flex-1 p-4 lg:p-6 overflow-y-auto bg-gradient-to-br from-[#f8fafc] to-[#f1f5f9] dark:from-[#052659] dark:to-[#073069]">
            <div className="max-w-7xl mx-auto space-y-6">
              {activeTab === 'dashboard' && <Dashboard userSettings={userSettings} user={user} selectedBranch={selectedBranch} />}
-{activeTab === 'cogs' && <CogsIntelligence selectedBranch={selectedBranch} userSettings={userSettings} />}
-{activeTab === 'suppliers' && <Suppliers />}
-{activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
-{activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
-{activeTab === 'settings' && <Settings ... />}
+             {activeTab === 'cogs' && <CogsIntelligence selectedBranch={selectedBranch} userSettings={userSettings} />}
+             {activeTab === 'reports' && <FinanceReport selectedBranch={selectedBranch} />}
+             {activeTab === 'debts' && <DebtLedger selectedBranch={selectedBranch} />}
+             {activeTab === 'suppliers' && <Suppliers />}
+             {activeTab === 'planner' && <ProcurementPlanner selectedBranch={selectedBranch} />}
+             {activeTab === 'financials' && <Financials appConfig={appConfig} selectedBranch={selectedBranch} />}
+             {activeTab === 'settings' && <Settings user={user} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} userSettings={userSettings} isSuperAdmin={isSuperAdmin} appConfig={appConfig} selectedBranch={selectedBranch} />}
           </div>
         </div>
 
