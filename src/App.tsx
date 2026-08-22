@@ -42,6 +42,7 @@ import PinModal from './components/PinModal';
 import ProcurementPlanner from './components/ProcurementPlanner';
 import FinanceReport from './components/FinanceReport';
 import DebtLedger from './components/DebtLedger';
+import CogsIntelligence from './components/CogsIntelligence';
 
 // Premium Text Logo Component
 const TextLogo = ({ centered = false, dark = false, name = "La Dolce" }: { centered?: boolean, dark?: boolean, name?: string | null }) => (
